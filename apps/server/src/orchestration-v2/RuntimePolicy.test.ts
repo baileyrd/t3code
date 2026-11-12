@@ -224,7 +224,6 @@ it.layer(
   it.effect.each([
     ["a local thread", null, "/repo/crates/mill"],
     ["a worktree thread", "/worktrees/feature", "/worktrees/feature/crates/mill"],
-    ["a worktree without the folder", "/worktrees/old", "/worktrees/old"],
   ] as const)("runs %s in the project folder", ([, worktreePath, expected]) =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;
@@ -234,6 +233,20 @@ it.layer(
         modelSelection,
       });
       assert.equal(resolved.cwd, expected);
+    }),
+  );
+
+  it.effect("refuses a worktree without the project folder instead of using its root", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const refused = yield* policy
+        .resolve({ thread: makeThread({ now, worktreePath: "/worktrees/old" }), modelSelection })
+        .pipe(Effect.flip);
+      assert.include(
+        refused.message,
+        "`crates/mill` does not exist in the worktree /worktrees/old",
+      );
     }),
   );
 });

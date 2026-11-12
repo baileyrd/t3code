@@ -20,7 +20,12 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import { resolveThreadWorkspaceCwd } from "../workspace/threadWorkspaceCwd.ts";
+import {
+  resolveThreadWorkspaceCwd,
+  ThreadWorkspaceFolderMissingError,
+} from "../workspace/threadWorkspaceCwd.ts";
+
+const isFolderMissing = Schema.is(ThreadWorkspaceFolderMissingError);
 
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
@@ -31,7 +36,8 @@ export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyR
   },
 ) {
   override get message(): string {
-    return `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
+    const base = `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
+    return isFolderMissing(this.cause) ? `${base} ${this.cause.message}` : base;
   }
 }
 
@@ -182,7 +188,16 @@ export const layerFromProjectStore: Layer.Layer<
           ? yield* resolveThreadWorkspaceCwd(workspace, {
               workspaceRoot: project.value.workspaceRoot,
               worktreePath: input.thread.worktreePath,
-            })
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
+            )
           : input.thread.worktreePath;
         if (cwd === null) {
           return yield* new RuntimePolicyResolveError({

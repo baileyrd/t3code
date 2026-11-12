@@ -149,13 +149,6 @@ describe("ProjectSetupScriptRunner", () => {
       ["/repo/.t3/worktrees/feature/crates/mill"],
       "/repo/.t3/worktrees/feature/crates/mill",
     ],
-    [
-      "a package missing from the worktree",
-      "/repo/crates/mill",
-      "/repo",
-      [],
-      "/repo/.t3/worktrees/feature",
-    ],
   ] as const)(
     "runs setup for %s in its worktree folder",
     ([, workspaceRoot, repositoryRoot, existingPaths, expected]) =>

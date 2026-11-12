@@ -21,7 +21,10 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import { resolveThreadWorkspaceCwd } from "../workspace/threadWorkspaceCwd.ts";
+import {
+  resolveThreadWorkspaceCwd,
+  ThreadWorkspaceFolderMissingError,
+} from "../workspace/threadWorkspaceCwd.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 export interface ProjectSetupScriptRunnerResultNoScript {
@@ -122,6 +125,7 @@ export const ProjectSetupScriptRunnerError = Schema.Union([
   ProjectSetupScriptOperationError,
   ProjectSetupScriptProjectNotFoundError,
   ProjectSetupScriptUnsupportedShellError,
+  ThreadWorkspaceFolderMissingError,
 ]);
 export type ProjectSetupScriptRunnerError = typeof ProjectSetupScriptRunnerError.Type;
 

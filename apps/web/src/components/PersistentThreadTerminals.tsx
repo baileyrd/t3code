@@ -182,7 +182,7 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
       ? projectScriptCwd({
           project: {
             cwd: project.workspaceRoot,
-            repositoryRoot: project.repositoryIdentity?.rootPath,
+            repositorySubdirectory: project.repositorySubdirectory,
           },
           worktreePath: effectiveWorktreePath,
         })
@@ -349,7 +349,7 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
       ? projectScriptCwd({
           project: {
             cwd: project.workspaceRoot,
-            repositoryRoot: project.repositoryIdentity?.rootPath,
+            repositorySubdirectory: project.repositorySubdirectory,
           },
           worktreePath,
         })
@@ -377,7 +377,7 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
         projectScriptCwd({
           project: {
             cwd: project.workspaceRoot,
-            repositoryRoot: project.repositoryIdentity?.rootPath,
+            repositorySubdirectory: project.repositorySubdirectory,
           },
           worktreePath: terminalWorktreePath,
         }),

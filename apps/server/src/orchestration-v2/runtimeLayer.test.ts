@@ -445,12 +445,14 @@ const layerProjectDeletionTest = Layer.mergeAll(
       peek: () =>
         Effect.succeed({
           repositoryIdentity: null,
+          repositorySubdirectory: null,
           faviconPath: null,
           repositoryIdentityResolved: false,
         }),
       getAvailable: () =>
         Effect.succeed({
           repositoryIdentity: null,
+          repositorySubdirectory: null,
           faviconPath: null,
           repositoryIdentityResolved: false,
         }),
@@ -473,6 +475,66 @@ const layerProjectDeletionTest = Layer.mergeAll(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
 );
+
+it.layer(layerProjectDeletionTest)("a project below its repository root", (it) => {
+  it.effect("checkpoints the whole worktree while the agent works in the project folder", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const base = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-package-scope-" });
+      const repository = `${base}/repository`;
+      const worktreePath = `${base}/worktree`;
+      yield* fileSystem.makeDirectory(`${repository}/crates/mill`, { recursive: true });
+      yield* fileSystem.makeDirectory(`${worktreePath}/crates/mill`, { recursive: true });
+      yield* Effect.gen(function* () {
+        const vcs = yield* VcsProcess.VcsProcess;
+        return yield* vcs.run({
+          operation: "test.git-init",
+          command: "git",
+          args: ["init", "--quiet", repository],
+          cwd: repository,
+        });
+      }).pipe(Effect.provide(VcsProcess.layer));
+      const projectId = ProjectId.make("runtime-package-scope-project");
+      const threadId = ThreadId.make("runtime-package-scope");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-package-scope-project-create"),
+        projectId,
+        title: "Package scope",
+        workspaceRoot: `${repository}/crates/mill`,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-package-scope-create"),
+        threadId,
+        projectId,
+        title: "Package scope",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath,
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-package-scope-message"),
+        threadId,
+        messageId: MessageId.make("runtime-package-scope-message"),
+        text: "Edit the workspace Cargo.lock.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(projection.checkpointScopes[0]?.cwd, worktreePath);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
 
 it.layer(layerProjectDeletionTest)("project deletion during thread commands", (it) => {
   it.effect.each(["thread", "project"] as const)(
@@ -990,6 +1052,7 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
       peek: () =>
         Effect.succeed({
           repositoryIdentity: null,
+          repositorySubdirectory: null,
           faviconPath: null,
           repositoryIdentityResolved: false,
         }),
@@ -998,6 +1061,7 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
       getAvailable: () =>
         Effect.succeed({
           repositoryIdentity: null,
+          repositorySubdirectory: null,
           faviconPath: null,
           repositoryIdentityResolved: false,
         }),

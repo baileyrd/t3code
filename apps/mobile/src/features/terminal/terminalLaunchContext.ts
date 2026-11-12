@@ -1,4 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import { useState } from "react";
 
 interface TerminalLocationLike {
@@ -62,6 +63,7 @@ export function resolveTerminalOpenLocation(input: {
   readonly terminalLocation: TerminalLocationLike | null;
   readonly activeSessionLocation: TerminalLocationLike | null;
   readonly workspaceRoot: string;
+  readonly repositorySubdirectory?: string | null | undefined;
   readonly threadShellWorktreePath: string | null;
   readonly threadDetailWorktreePath: string | null;
 }): {
@@ -79,7 +81,10 @@ export function resolveTerminalOpenLocation(input: {
     threadDetailWorktreePath: input.threadDetailWorktreePath,
   });
   return {
-    cwd: preferredThreadWorktreePath ?? input.workspaceRoot,
+    cwd: projectScriptCwd({
+      project: { cwd: input.workspaceRoot, repositorySubdirectory: input.repositorySubdirectory },
+      worktreePath: preferredThreadWorktreePath,
+    }),
     worktreePath: preferredThreadWorktreePath,
   };
 }

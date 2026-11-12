@@ -23,6 +23,7 @@ import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -277,6 +278,10 @@ const layerIdentityRefresh = <R>(
           Layer.provide(
             Layer.mergeAll(
               resolver,
+              Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+                detect: () => Effect.succeed(null),
+              }),
+              FileSystem.layerNoop({}),
               Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
                 invalidate: () => Effect.void,
                 resolvePath: () => Effect.succeed(null),

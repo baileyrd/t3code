@@ -26,7 +26,7 @@ export function useActiveProjectTarget(): ActiveProjectTarget | null {
     : null;
   if (!thread || !threadId || !project) return null;
   const cwd = projectScriptCwd({
-    project: { cwd: project.workspaceRoot, repositoryRoot: project.repositoryIdentity?.rootPath },
+    project: { cwd: project.workspaceRoot, repositorySubdirectory: project.repositorySubdirectory },
     worktreePath: thread.worktreePath,
   });
 

@@ -1240,7 +1240,7 @@ export default function ChatView(props: ChatViewProps) {
     ? projectScriptCwd({
         project: {
           cwd: activeProject.workspaceRoot,
-          repositoryRoot: activeProject.repositoryIdentity?.rootPath,
+          repositorySubdirectory: activeProject.repositorySubdirectory,
         },
         worktreePath: activeThread?.worktreePath ?? null,
       })
@@ -2673,7 +2673,7 @@ export default function ChatView(props: ChatViewProps) {
         projectScriptCwd({
           project: {
             cwd: activeProjectCwd,
-            repositoryRoot: activeProject?.repositoryIdentity?.rootPath,
+            repositorySubdirectory: activeProject?.repositorySubdirectory,
           },
           worktreePath: activeThreadWorktreePath,
         }) === terminalUiLaunchContext.cwd &&

@@ -199,6 +199,7 @@ export const ChatHeader = memo(function ChatHeader({
   const { openMenu, closeMenu } = useThreadActionMenu({
     threadRef: isServerThread ? activeThreadRef : null,
     projectCwd: activeProjectCwd,
+    projectSubdirectory: activeProject?.repositorySubdirectory ?? null,
     onStartRename: startRename,
     onFind: onFindInThread,
     canShareWithGuest,

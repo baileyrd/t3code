@@ -60,14 +60,16 @@ function retainRepositoryIdentity(
   previous: OrchestrationProjectShell | undefined,
   next: OrchestrationProjectShell,
 ): OrchestrationProjectShell {
-  if (
-    next.repositoryIdentity == null &&
-    previous?.repositoryIdentity != null &&
-    previous.workspaceRoot === next.workspaceRoot
-  ) {
-    return { ...next, repositoryIdentity: previous.repositoryIdentity };
-  }
-  return next;
+  if (previous === undefined || previous.workspaceRoot !== next.workspaceRoot) return next;
+  const keepIdentity = next.repositoryIdentity == null && previous.repositoryIdentity != null;
+  const keepSubdirectory =
+    next.repositorySubdirectory == null && previous.repositorySubdirectory != null;
+  if (!keepIdentity && !keepSubdirectory) return next;
+  return {
+    ...next,
+    ...(keepIdentity ? { repositoryIdentity: previous.repositoryIdentity } : {}),
+    ...(keepSubdirectory ? { repositorySubdirectory: previous.repositorySubdirectory } : {}),
+  };
 }
 
 export interface MergeShellSnapshotOptions {
@@ -98,16 +100,31 @@ export function mergeShellSnapshotProjects(
       if (candidate === undefined || candidate.workspaceRoot !== project.workspaceRoot) {
         return project;
       }
+      const subdirectory = candidate.repositorySubdirectory ?? project.repositorySubdirectory;
       if (resolvedRootSet?.has(project.workspaceRoot) === true) {
         // Refreshes re-resolve every root; an unchanged identity keeps the project's identity
         // so every subscriber (each pull request row, the sidebar) skips re-rendering.
-        if (sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
+        if (
+          sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity) &&
+          subdirectory === project.repositorySubdirectory
+        ) {
           return project;
         }
-        return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+        return {
+          ...project,
+          repositoryIdentity: candidate.repositoryIdentity,
+          repositorySubdirectory: subdirectory,
+        };
       }
-      if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
-        return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+      const identity =
+        project.repositoryIdentity == null && candidate.repositoryIdentity != null
+          ? candidate.repositoryIdentity
+          : project.repositoryIdentity;
+      if (
+        identity !== project.repositoryIdentity ||
+        subdirectory !== project.repositorySubdirectory
+      ) {
+        return { ...project, repositoryIdentity: identity, repositorySubdirectory: subdirectory };
       }
       return project;
     });

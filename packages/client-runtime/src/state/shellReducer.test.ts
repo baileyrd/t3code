@@ -49,21 +49,27 @@ describe("applyShellStreamEvent", () => {
     }
   });
 
-  it("keeps prior repositoryIdentity when a delta arrives with null identity", () => {
+  it("keeps prior repositoryIdentity and subdirectory when a delta arrives with null ones", () => {
     const withIdentity = applyShellStreamEvent(v2ShellSnapshot, {
       kind: "project.updated",
       sequence: 1,
-      project: { ...v2Project, repositoryIdentity },
+      project: { ...v2Project, repositoryIdentity, repositorySubdirectory: "crates/mill" },
     });
     expect(withIdentity.projects[0]?.repositoryIdentity).toEqual(repositoryIdentity);
 
     const withoutIdentity = applyShellStreamEvent(withIdentity, {
       kind: "project.updated",
       sequence: 2,
-      project: { ...v2Project, title: "Still same root", repositoryIdentity: null },
+      project: {
+        ...v2Project,
+        title: "Still same root",
+        repositoryIdentity: null,
+        repositorySubdirectory: null,
+      },
     });
     expect(withoutIdentity.projects[0]?.title).toBe("Still same root");
     expect(withoutIdentity.projects[0]?.repositoryIdentity).toEqual(repositoryIdentity);
+    expect(withoutIdentity.projects[0]?.repositorySubdirectory).toBe("crates/mill");
   });
 
   it("does not keep prior repositoryIdentity after a workspace root move", () => {
