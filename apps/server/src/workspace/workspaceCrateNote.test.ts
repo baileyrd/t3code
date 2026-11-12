@@ -4,9 +4,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/process";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vite-plus/test";
 
-import type * as ProcessRunner from "../processRunner.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import {
   cargoWorkspaceDependencies,
   makeWorkspaceCrateNoteReader,
@@ -115,9 +116,12 @@ const workspaceFiles: Readonly<Record<string, string>> = {
 const makeReader = (input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
+  /** `"missing"` when rustup is not installed. */
+  readonly rustupDefault?: ProcessRunner.ProcessRunOutput | "missing";
 }) => {
   const files = input.files ?? workspaceFiles;
   const runs: ProcessRunner.ProcessRunInput[] = [];
+  const rustupRuns: ProcessRunner.ProcessRunInput[] = [];
   const outputs = [...(input.outputs ?? [output({ stdout: JSON.stringify(metadata) })])];
   const fileSystem = FileSystem.makeNoop({
     readFileString: (file) =>
@@ -129,14 +133,33 @@ const makeReader = (input: {
   });
   const processRunner = {
     run: (runInput: ProcessRunner.ProcessRunInput) =>
-      Effect.sync(() => {
-        runs.push(runInput);
-        return outputs.shift() ?? output({ stdout: JSON.stringify(metadata) });
+      Effect.suspend(() => {
+        if (runInput.command !== "rustup") {
+          runs.push(runInput);
+          return Effect.succeed(outputs.shift() ?? output({ stdout: JSON.stringify(metadata) }));
+        }
+        rustupRuns.push(runInput);
+        if (input.rustupDefault === "missing") {
+          return Effect.fail(
+            new ProcessRunner.ProcessSpawnError({
+              command: "rustup",
+              argumentCount: 1,
+              cause: notFound("rustup"),
+            }),
+          );
+        }
+        return Effect.succeed(
+          input.rustupDefault ?? output({ stdout: "stable-x86_64-unknown-linux-gnu (default)\n" }),
+        );
       }),
   } as unknown as ProcessRunner.ProcessRunner["Service"];
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    return { read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }), runs };
+    return {
+      read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }),
+      runs,
+      rustupRuns,
+    };
   });
 };
 
@@ -145,13 +168,17 @@ const millNote =
 
 describe("makeWorkspaceCrateNoteReader", () => {
   effectIt.effect(
-    "names the crate of a folder opened through a symlink, without rustup installs",
+    "names the crate of a folder opened through a symlink, on the default toolchain",
     () =>
       Effect.gen(function* () {
-        const { read, runs } = yield* makeReader({});
+        const { read, runs, rustupRuns } = yield* makeReader({});
         assert.equal(yield* read("/link/crates/mill"), millNote);
         assert.equal(runs[0]?.cwd, "/repo/crates/mill");
-        assert.deepEqual(runs[0]?.env, { RUSTUP_AUTO_INSTALL: "0" });
+        assert.deepEqual(runs[0]?.env, {
+          RUSTUP_TOOLCHAIN: "stable-x86_64-unknown-linux-gnu",
+          RUSTUP_AUTO_INSTALL: "0",
+        });
+        assert.equal(rustupRuns[0]?.cwd, "/");
       }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -160,20 +187,19 @@ describe("makeWorkspaceCrateNoteReader", () => {
       const copy = Object.fromEntries(
         Object.entries(workspaceFiles).map(([file, text]) => [file.replace("/repo", "/wt"), text]),
       );
-      const { read, runs } = yield* makeReader({ files: { ...workspaceFiles, ...copy } });
+      const { read, runs, rustupRuns } = yield* makeReader({
+        files: { ...workspaceFiles, ...copy },
+      });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(yield* read("/wt/crates/mill"), millNote);
       assert.equal(runs.length, 1);
+      assert.equal(rustupRuns.length, 1);
     }).pipe(Effect.provide(Path.layer)),
   );
 
   effectIt.effect.each([
     ["no manifest in the folder", { "/repo/Cargo.toml": workspaceFiles["/repo/Cargo.toml"]! }],
     ["no workspace above it", { "/repo/crates/mill/Cargo.toml": "[package]\n" }],
-    [
-      "a toolchain that points rustup at a repository folder",
-      { ...workspaceFiles, "/repo/rust-toolchain.toml": '[toolchain]\npath = "/opt/evil"\n' },
-    ],
   ] as const)("stays silent without running cargo for %s", ([, files]) =>
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({ files });
@@ -188,10 +214,11 @@ describe("makeWorkspaceCrateNoteReader", () => {
     ["output that is not metadata", output({ stdout: "{" })],
   ] as const)("stays silent on %s and tries again next time", ([, failure]) =>
     Effect.gen(function* () {
-      const { read, runs } = yield* makeReader({ outputs: [failure] });
+      const { read, runs, rustupRuns } = yield* makeReader({ outputs: [failure] });
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
+      assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -209,14 +236,41 @@ describe("makeWorkspaceCrateNoteReader", () => {
     }).pipe(Effect.provide(Path.layer)),
   );
 
-  effectIt.effect("reads a pinned channel toolchain as usual", () =>
+  effectIt.effect.each([
+    ["no rustup default", output({ code: ChildProcessSpawner.ExitCode(1) })],
+    ["a default that is a folder", output({ stdout: "/opt/evil (default)\n" })],
+  ] as const)("stays silent without running cargo for %s", ([, rustupDefault]) =>
     Effect.gen(function* () {
-      const files = {
-        ...workspaceFiles,
-        "/repo/rust-toolchain.toml": '[toolchain]\nchannel = "1.90"\n',
-      };
-      const { read } = yield* makeReader({ files });
+      const { read, runs, rustupRuns } = yield* makeReader({ rustupDefault });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(runs.length, 0);
+      assert.equal(rustupRuns.length, 1);
+      yield* TestClock.adjust("5 minutes");
+      yield* read("/repo/crates/mill");
+      assert.equal(rustupRuns.length, 2);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("pins a toolchain no rustup shim has when rustup is not installed", () =>
+    Effect.gen(function* () {
+      const { read, runs } = yield* makeReader({ rustupDefault: "missing" });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.deepEqual(runs[0]?.env, {
+        RUSTUP_TOOLCHAIN: "t3code-no-toolchain",
+        RUSTUP_AUTO_INSTALL: "0",
+      });
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("asks rustup again after it timed out", () =>
+    Effect.gen(function* () {
+      const { read, rustupRuns } = yield* makeReader({
+        rustupDefault: output({ timedOut: true, code: null }),
+      });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),
   );
 });

@@ -1,5 +1,8 @@
+import { isCommandMissingCause } from "@t3tools/provider-core/server/snapshotProbe";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Hash from "effect/Hash";
+import * as Option from "effect/Option";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -64,11 +67,15 @@ export function workspaceCrateNoteText(
   return `This folder is the \`${result.crate}\` crate of a Cargo workspace. Its workspace dependencies: ${result.dependencies.join(", ")}.`;
 }
 
-const TOOLCHAIN_FILES = ["rust-toolchain.toml", "rust-toolchain"] as const;
 const WORKSPACE_TABLE = /^\s*\[workspace\]/m;
-// A toolchain `path` makes the rustup proxy run that folder's `bin/cargo`, a binary the repository picks.
-const TOOLCHAIN_PATH = /^\s*path\s*=/m;
+// A toolchain name, never a path: `RUSTUP_TOOLCHAIN=/dir` would run that folder's `bin/cargo`.
+const TOOLCHAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const CACHE_CAPACITY = 64;
+const TOOLCHAIN_TTL_MS = 5 * 60 * 1000;
+
+// Pinned when rustup is missing: a lone rustup `cargo` shim still proxies, and refuses this name;
+// a non-rustup cargo ignores the variable.
+const NO_RUSTUP_TOOLCHAIN = "t3code-no-toolchain";
 
 interface WorkspaceCrateNoteServices {
   readonly processRunner: ProcessRunner.ProcessRunner["Service"];
@@ -88,35 +95,72 @@ export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteService
   const readText = (file: string) =>
     fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => null));
 
-  /** The nearest workspace manifest above `cwd`, or null when rustup would run a repository binary. */
+  const rootOf = (dir: string): string =>
+    path.dirname(dir) === dir ? dir : rootOf(path.dirname(dir));
+
+  /** The nearest workspace manifest above `cwd`. */
   const findWorkspace = Effect.fn("WorkspaceCrateNote.findWorkspace")(function* (cwd: string) {
-    let workspaceRoot: string | null = null;
-    let toolchainChecked = false;
     for (let dir = cwd; ; dir = path.dirname(dir)) {
-      for (const name of toolchainChecked ? [] : TOOLCHAIN_FILES) {
-        const toolchain = yield* readText(path.join(dir, name));
-        if (toolchain === null) continue;
-        if (TOOLCHAIN_PATH.test(toolchain)) return null;
-        toolchainChecked = true;
-        break;
-      }
-      if (workspaceRoot === null) {
-        const manifest = yield* readText(path.join(dir, "Cargo.toml"));
-        if (manifest !== null && WORKSPACE_TABLE.test(manifest)) workspaceRoot = dir;
-      }
-      if ((workspaceRoot !== null && toolchainChecked) || path.dirname(dir) === dir) break;
+      const manifest = yield* readText(path.join(dir, "Cargo.toml"));
+      if (manifest !== null && WORKSPACE_TABLE.test(manifest)) return dir;
+      if (path.dirname(dir) === dir) return null;
     }
-    return workspaceRoot;
   });
 
-  const runCargo = Effect.fn("WorkspaceCrateNote.runCargo")(function* (cwd: string) {
+  /** The toolchain to pin cargo to, null for none, or None when rustup failed in passing. */
+  const readDefaultToolchain = (cwd: string) =>
+    services.processRunner
+      .run({
+        command: "rustup",
+        args: ["default"],
+        cwd,
+        timeout: "5 seconds",
+        timeoutBehavior: "timedOutResult",
+      })
+      .pipe(
+        Effect.map((output): Option.Option<string | null> => {
+          if (output.timedOut) return Option.none();
+          const name = output.code === 0 ? (output.stdout.trim().split(/\s+/)[0] ?? "") : "";
+          return Option.some(TOOLCHAIN_NAME.test(name) ? name : null);
+        }),
+        Effect.catch((error) =>
+          Effect.succeed(
+            error._tag === "ProcessSpawnError" && isCommandMissingCause(error.cause)
+              ? Option.some(NO_RUSTUP_TOOLCHAIN)
+              : Option.none(),
+          ),
+        ),
+      );
+
+  /**
+   * The toolchain cargo runs on, kept for a few minutes. `cargo` is usually a rustup proxy that
+   * obeys a repository's `rust-toolchain(.toml)`, which can name a folder whose `bin/cargo` it
+   * then runs; pinning `RUSTUP_TOOLCHAIN` to the user's default overrides every such file.
+   */
+  let cachedToolchain: { readonly name: string | null; readonly at: number } | undefined;
+  const resolveToolchain = Effect.fn("WorkspaceCrateNote.resolveToolchain")(function* (
+    cwd: string,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    if (cachedToolchain !== undefined && now - cachedToolchain.at < TOOLCHAIN_TTL_MS) {
+      return cachedToolchain.name;
+    }
+    const resolved = yield* readDefaultToolchain(rootOf(cwd));
+    if (Option.isNone(resolved)) return null;
+    cachedToolchain = { name: resolved.value, at: now };
+    return resolved.value;
+  });
+
+  const runCargo = Effect.fn("WorkspaceCrateNote.runCargo")(function* (
+    cwd: string,
+    toolchain: string,
+  ) {
     const output = yield* services.processRunner
       .run({
         command: "cargo",
         args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
         cwd,
-        // A missing pinned toolchain would otherwise download on every new thread.
-        env: { RUSTUP_AUTO_INSTALL: "0" },
+        env: { RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
         timeout: "5 seconds",
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: 8 * 1024 * 1024,
@@ -145,9 +189,15 @@ export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteService
     );
     const cached = notes.get(key);
     if (cached !== undefined) return cached;
-    const note = yield* runCargo(physicalCwd);
-    // Failures stay uncached so a slow or locked cargo gets another try on the next thread.
-    if (note === null) return "";
+    // Without a known default toolchain, cargo would follow the repository's toolchain file.
+    const toolchain = yield* resolveToolchain(physicalCwd);
+    if (toolchain === null) return "";
+    const note = yield* runCargo(physicalCwd, toolchain);
+    // Failures stay uncached, and drop the toolchain in case it was switched or uninstalled.
+    if (note === null) {
+      cachedToolchain = undefined;
+      return "";
+    }
     const oldest = notes.keys().next();
     if (notes.size >= CACHE_CAPACITY && oldest.done !== true) notes.delete(oldest.value);
     notes.set(key, note);

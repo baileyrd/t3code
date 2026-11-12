@@ -801,9 +801,9 @@ function makeLocalCommandHarness(input: {
     lastError: null,
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
-  const runProcess = vi.fn(() =>
+  const runProcess = vi.fn((run: ProcessRunner.ProcessRunInput) =>
     Effect.succeed<ProcessRunner.ProcessRunOutput>({
-      stdout: input.cargoMetadata ?? "",
+      stdout: run.command === "rustup" ? "stable (default)\n" : (input.cargoMetadata ?? ""),
       stderr: "",
       code: ChildProcessSpawner.ExitCode(input.cargoMetadata === undefined ? 101 : 0),
       timedOut: false,
