@@ -220,6 +220,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
     Effect.gen(function* () {
       const { read, runs, rustupRuns } = yield* makeReader({ outputs: [failure] });
       assert.equal(yield* read("/repo/crates/mill"), "");
+      yield* TestClock.adjust("10 seconds");
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
       assert.equal(rustupRuns.length, 2);
@@ -273,6 +274,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
         rustupDefault: output({ timedOut: true, code: null }),
       });
       assert.equal(yield* read("/repo/crates/mill"), "");
+      yield* TestClock.adjust("10 seconds");
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),

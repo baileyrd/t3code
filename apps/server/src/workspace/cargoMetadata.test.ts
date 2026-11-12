@@ -1,9 +1,12 @@
 import { assert, it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/process";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -157,6 +160,41 @@ describe("makeCargoMetadataReader", () => {
       yield* read();
       assert.equal(runs.length, 1);
       assert.equal(runs[0]?.timeout, "30 seconds");
+    }),
+  );
+
+  effectIt.effect("shares one cargo run between reads that overlap", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const metadata = output({ stdout: JSON.stringify(metadataOf({ "crates/mill": "mill" })) });
+      const { read, runs } = yield* makeReader({
+        cargo: Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+          Effect.as(metadata),
+        ),
+      });
+      const first = yield* Effect.forkChild(read());
+      yield* Deferred.await(started);
+      const second = yield* Effect.forkChild(read());
+      yield* Deferred.succeed(gate, undefined);
+      assert.deepEqual(names(yield* Fiber.join(first)), ["mill"]);
+      assert.deepEqual(names(yield* Fiber.join(second)), ["mill"]);
+      assert.equal(runs.length, 1);
+    }),
+  );
+
+  effectIt.effect("reuses a failure for 10 seconds before running cargo again", () =>
+    Effect.gen(function* () {
+      const { read, runs } = yield* makeReader({
+        cargo: Effect.succeed(output({ timedOut: true, code: null })),
+      });
+      yield* Effect.flip(read());
+      yield* Effect.flip(read());
+      assert.equal(runs.length, 1);
+      yield* TestClock.adjust("10 seconds");
+      yield* Effect.flip(read());
+      assert.equal(runs.length, 2);
     }),
   );
 

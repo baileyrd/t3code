@@ -1,6 +1,7 @@
 import { isCommandMissingCause } from "@t3tools/provider-core/server/snapshotProbe";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -9,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ProcessRunner from "../processRunner.ts";
 
@@ -84,6 +86,8 @@ const WORKSPACE_TABLE = /^\s*\[workspace\]/m;
 const TOOLCHAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const CACHE_CAPACITY = 16;
 const TOOLCHAIN_TTL_MS = 5 * 60 * 1000;
+const FAILURE_TTL_MS = 10 * 1000;
+const CARGO_CONCURRENCY = 2;
 
 // Pinned when rustup is missing: a lone rustup `cargo` shim still proxies, and refuses this name;
 // a non-rustup cargo ignores the variable.
@@ -238,6 +242,29 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
     return metadata.value;
   });
 
+  /** Runs cargo for one workspace state and records what it found. */
+  const load = Effect.fn("CargoMetadata.load")(function* (
+    root: string,
+    rootManifest: string,
+    timeout: Duration.Input,
+  ) {
+    const toolchain = yield* resolveToolchain(root);
+    const metadata = yield* runCargo(root, toolchain, timeout).pipe(
+      // Drop the toolchain in case it was switched or uninstalled.
+      Effect.tapError(() => Effect.sync(() => (cachedToolchain = undefined))),
+    );
+    const members = cargoWorkspaceMembers(metadata).map((member) => member.relativePath);
+    remember(membersByRootManifest, Hash.string(rootManifest), members);
+    remember(metadataByFingerprint, yield* fingerprint(root, rootManifest, members), metadata);
+    return metadata;
+  });
+
+  // Any client with filesystem read can ask for a listing, so cargo work stays bounded: one run
+  // per workspace at a time, two runs across workspaces, and a failure is reused for a while.
+  const cargoRuns = Semaphore.makeUnsafe(CARGO_CONCURRENCY);
+  const running = new Map<number, Deferred.Deferred<CargoMetadata, CargoMetadataError>>();
+  const failures = new Map<number, { readonly error: CargoMetadataError; readonly at: number }>();
+
   /** Metadata of the workspace rooted at the physical path `root`. */
   const read = Effect.fn("CargoMetadata.read")(function* (
     root: string,
@@ -245,23 +272,31 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
   ) {
     const rootManifest = yield* readText(path.join(root, "Cargo.toml"));
     if (rootManifest === null) return yield* fail("This folder has no `Cargo.toml`.");
-    const rootKey = Hash.string(rootManifest);
-    const knownMembers = membersByRootManifest.get(rootKey);
+    const knownMembers = membersByRootManifest.get(Hash.string(rootManifest));
     if (knownMembers !== undefined) {
       const cached = metadataByFingerprint.get(
         yield* fingerprint(root, rootManifest, knownMembers),
       );
       if (cached !== undefined) return cached;
     }
-    const toolchain = yield* resolveToolchain(root);
-    const metadata = yield* runCargo(root, toolchain, options.timeout).pipe(
-      // Drop the toolchain in case it was switched or uninstalled.
-      Effect.tapError(() => Effect.sync(() => (cachedToolchain = undefined))),
-    );
-    const members = cargoWorkspaceMembers(metadata).map((member) => member.relativePath);
-    remember(membersByRootManifest, rootKey, members);
-    remember(metadataByFingerprint, yield* fingerprint(root, rootManifest, members), metadata);
-    return metadata;
+    const key = Hash.string(`${root}\0${rootManifest}`);
+    const now = yield* Clock.currentTimeMillis;
+    const failure = failures.get(key);
+    if (failure !== undefined && now - failure.at < FAILURE_TTL_MS) return yield* failure.error;
+    const pending = running.get(key);
+    if (pending !== undefined) return yield* Deferred.await(pending);
+    const deferred = Deferred.makeUnsafe<CargoMetadata, CargoMetadataError>();
+    running.set(key, deferred);
+    return yield* cargoRuns
+      .withPermits(1)(load(root, rootManifest, options.timeout))
+      .pipe(
+        Effect.tapError((error) => Effect.sync(() => remember(failures, key, { error, at: now }))),
+        Effect.onExit((exit) =>
+          Effect.sync(() => running.delete(key)).pipe(
+            Effect.andThen(Deferred.done(deferred, exit)),
+          ),
+        ),
+      );
   });
 
   return { isWorkspaceRoot, findWorkspaceRoot, read };
