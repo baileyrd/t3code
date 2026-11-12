@@ -41,6 +41,7 @@ import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
   filterFilesystemBrowseEntries,
+  filterWorkspacePackages,
   getFilesystemBrowsePath,
   resolveFilesystemReadAccess,
 } from "@t3tools/client-runtime/state/filesystem";
@@ -924,6 +925,9 @@ export function AddProjectRepositoryScreen(props: {
   );
 }
 
+// The list is not virtualized, and a large workspace has hundreds of packages.
+const MOBILE_PACKAGE_ROW_LIMIT = 50;
+
 function FolderBrowser(props: {
   readonly environment: EnvironmentOption;
   readonly pathInput: string;
@@ -934,6 +938,8 @@ function FolderBrowser(props: {
   }) => Promise<boolean>;
   readonly pinnedDirectoryName?: string;
   readonly cloning?: boolean;
+  /** Offers the member packages of a browsed workspace root, each as its own project. */
+  readonly onAddPackage?: (fullPath: string) => void;
 }) {
   const browsePath = getFilesystemBrowsePath(props.pathInput, props.environment.platform);
   const browseInput =
@@ -957,6 +963,15 @@ function FolderBrowser(props: {
           input: browseInput,
         }),
   );
+  const browseParentPath = browseState.data?.parentPath ?? null;
+  const packagesState = useEnvironmentQuery(
+    !canReadFiles || props.onAddPackage === undefined || browseParentPath === null
+      ? null
+      : filesystemEnvironment.workspacePackages({
+          environmentId: props.environment.environmentId,
+          input: { path: browseParentPath },
+        }),
+  );
   const pinnedDirectoryName = props.pinnedDirectoryName ?? "";
   const pinnedDirectoryMatches = isWindowsPlatform(props.environment.platform)
     ? browsePath.filterQuery.toLowerCase() === pinnedDirectoryName.toLowerCase()
@@ -967,8 +982,43 @@ function FolderBrowser(props: {
     browseFilterQuery,
   );
 
+  const packages = filterWorkspacePackages(
+    packagesState.data?.packages ?? [],
+    browsePath.filterQuery,
+  );
+  const hiddenPackageCount = Math.max(0, packages.length - MOBILE_PACKAGE_ROW_LIMIT);
+
   return (
     <>
+      {packages.length > 0 && props.onAddPackage !== undefined ? (
+        <>
+          <SectionTitle>Workspace packages</SectionTitle>
+          <ListSection>
+            {packages.slice(0, MOBILE_PACKAGE_ROW_LIMIT).map((pkg, index) => (
+              <ListRow
+                key={pkg.fullPath}
+                title={pkg.name}
+                subtitle={pkg.relativePath}
+                icon={
+                  <SymbolView
+                    name="cube"
+                    size={Platform.OS === "android" ? 24 : 17}
+                    tintColorClassName="accent-icon-muted"
+                    type="monochrome"
+                  />
+                }
+                isFirst={index === 0}
+                onPress={() => props.onAddPackage?.(pkg.fullPath)}
+              />
+            ))}
+          </ListSection>
+          {hiddenPackageCount > 0 ? (
+            <Text className="text-sm text-foreground-muted">
+              {hiddenPackageCount} more. Type part of a name after the folder path to find one.
+            </Text>
+          ) : null}
+        </>
+      ) : null}
       <SectionTitle>Browse folders</SectionTitle>
       {!canReadFiles && !fileAccess.isPending ? (
         <ErrorBanner message={fileAccess.error ?? "This connection cannot browse host folders."} />
@@ -1319,6 +1369,15 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const addProject = async (path: string) => {
+    setIsSubmitting(true);
+    const result = await createProject(path);
+    if (result && AsyncResult.isFailure(result)) {
+      setError(errorMessage(Cause.squash(result.cause)));
+    }
+    setIsSubmitting(false);
+  };
+
   const submitPath = async () => {
     if (!environment || isBrowseNavigating || isSubmitting) return;
     setError(null);
@@ -1331,13 +1390,13 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
       setError(resolved.error);
       return;
     }
+    await addProject(resolved.path);
+  };
 
-    setIsSubmitting(true);
-    const result = await createProject(resolved.path);
-    if (result && AsyncResult.isFailure(result)) {
-      setError(errorMessage(Cause.squash(result.cause)));
-    }
-    setIsSubmitting(false);
+  const addPackage = (fullPath: string) => {
+    if (!canCreateProject || isBrowseNavigating || isSubmitting) return;
+    setError(null);
+    void addProject(fullPath);
   };
 
   return (
@@ -1360,6 +1419,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
             navigateToBrowsePath={navigateToBrowsePath}
             pathInput={pathInput}
             setPathInput={setPathInput}
+            onAddPackage={addPackage}
           />
         </>
       ) : (

@@ -24,6 +24,7 @@ import {
   type ProjectId,
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
+  type FilesystemWorkspacePackage,
   type KeybindingCommand,
   type SourceControlDiscoveryResult,
   type SourceControlRepositoryInfo,
@@ -733,6 +734,26 @@ export function buildBrowseGroups(input: {
   }
 
   return [{ value: "directories", label: "Directories", items }];
+}
+
+/** Member packages of the browsed workspace root, each added as its own project. */
+export function buildWorkspacePackageGroups(input: {
+  packages: ReadonlyArray<FilesystemWorkspacePackage>;
+  icon: ReactNode;
+  addPackage: (fullPath: string) => Promise<void>;
+}): CommandPaletteGroup[] {
+  if (input.packages.length === 0) return [];
+  const items = input.packages.map((pkg): CommandPaletteActionItem => ({
+    kind: "action",
+    value: `package:${pkg.fullPath}`,
+    searchTerms: [pkg.name, pkg.relativePath],
+    title: pkg.name,
+    description: pkg.relativePath,
+    icon: input.icon,
+    keepOpen: true,
+    run: () => input.addPackage(pkg.fullPath),
+  }));
+  return [{ value: "workspace-packages", label: "Workspace packages", items }];
 }
 
 export function filterPinnedBrowseEntries(input: {

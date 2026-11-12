@@ -44,6 +44,25 @@ export const FilesystemBrowseResult = Schema.Struct({
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
 
+export const FilesystemWorkspacePackagesInput = Schema.Struct({
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
+});
+export type FilesystemWorkspacePackagesInput = typeof FilesystemWorkspacePackagesInput.Type;
+
+export const FilesystemWorkspacePackage = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  /** From the workspace root, with `/` separators. */
+  relativePath: TrimmedNonEmptyString,
+  fullPath: TrimmedNonEmptyString,
+});
+export type FilesystemWorkspacePackage = typeof FilesystemWorkspacePackage.Type;
+
+// Empty when the folder is not a workspace root or its manifest cannot be read.
+export const FilesystemWorkspacePackagesResult = Schema.Struct({
+  packages: Schema.Array(FilesystemWorkspacePackage),
+});
+export type FilesystemWorkspacePackagesResult = typeof FilesystemWorkspacePackagesResult.Type;
+
 export const FilesystemBrowseFailure = Schema.Literals([
   "windows_path_unsupported",
   "current_project_required",

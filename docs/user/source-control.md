@@ -171,6 +171,11 @@ under **Settings → Threads** (or **Source control** on mobile). Clones then de
 `<host>/<owner>/<repo>` under **Add project starts in**, so set that to `~/ghq` to share ghq's
 folders. You can still change the destination before cloning.
 
+To work on one package of a Cargo workspace, browse to the workspace root under **Add Project**:
+its member crates are listed under **Workspace packages**. Type part of a name to narrow them, and
+choose one to add that folder as its own project. Its threads work in that folder, and on a new
+worktree too. Listing needs `cargo` on the machine.
+
 For a local Git repository without a remote, **Publish Repository** creates a hosted repository,
 adds it as `origin`, and pushes your commits. If there are no commits yet, it creates the remote;
 make your first commit before pushing.

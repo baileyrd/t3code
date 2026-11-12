@@ -1,6 +1,7 @@
 import {
   AuthFilesystemReadScope,
   type FilesystemBrowseEntry,
+  type FilesystemWorkspacePackage,
   WS_METHODS,
   sessionGrantsScope,
   type SessionGrantInput,
@@ -133,6 +134,19 @@ export function createBrowseNavigationCoordinator() {
   };
 }
 
+/** Packages whose name or path contains `query`, ignoring case. */
+export function filterWorkspacePackages(
+  packages: ReadonlyArray<FilesystemWorkspacePackage>,
+  query: string,
+): ReadonlyArray<FilesystemWorkspacePackage> {
+  const lowerQuery = query.toLowerCase();
+  return packages.filter(
+    (pkg) =>
+      pkg.name.toLowerCase().includes(lowerQuery) ||
+      pkg.relativePath.toLowerCase().includes(lowerQuery),
+  );
+}
+
 export function canPreloadBrowsePath(
   connectionPhase: EnvironmentConnectionPhase | null | undefined,
 ): boolean {
@@ -152,6 +166,13 @@ export function createFilesystemEnvironmentAtoms<R, E>(
       tag: WS_METHODS.filesystemBrowse,
       // A listing mirrors a directory that can change outside the app, so reopening a picker
       // lists it again. The short TTL only keeps the old listing on screen while it refreshes.
+      idleTtlMs: BROWSE_IDLE_TTL_MS,
+      staleTimeMs: 0,
+      revalidateOnRemount: true,
+    }),
+    workspacePackages: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:filesystem:workspace-packages",
+      tag: WS_METHODS.filesystemWorkspacePackages,
       idleTtlMs: BROWSE_IDLE_TTL_MS,
       staleTimeMs: 0,
       revalidateOnRemount: true,
