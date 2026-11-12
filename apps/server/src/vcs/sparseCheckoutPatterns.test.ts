@@ -25,6 +25,15 @@ describe("sparseCheckoutPatterns", () => {
     ]);
   });
 
+  it("never cuts out the subfolders of a folder that holds another folder", () => {
+    const patterns = sparseCheckoutPatterns("/repo", {
+      directories: ["/repo/crates/tokio", "/repo/crates/tokio/macros"],
+      files: [],
+    });
+    expect(patterns).toContain("/crates/tokio/");
+    expect(patterns).not.toContain("!/crates/tokio/*/");
+  });
+
   it("relates Windows paths whatever their separators and case, keeping the paths' case", () => {
     expect(
       sparseCheckoutPatterns("C:/Dev/Repo", {

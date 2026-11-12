@@ -40,11 +40,15 @@ export function sparseCheckoutPatterns(
     const relative = relativeTo(repoRoot, dir);
     return relative === null ? [] : [relative];
   });
+  // A folder held whole is no ancestor: its `!dir/*/` would cut out its own subfolders.
+  const whole = new Set(directories);
   const ancestors = new Set<string>();
   for (const dir of directories) {
     const segments = dir.split("/");
     for (let depth = 1; depth < segments.length; depth++) {
-      ancestors.add(segments.slice(0, depth).join("/"));
+      const ancestor = segments.slice(0, depth).join("/");
+      if (whole.has(ancestor)) break;
+      ancestors.add(ancestor);
     }
   }
   const byDepth = [...ancestors].sort(
