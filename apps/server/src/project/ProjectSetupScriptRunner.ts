@@ -24,6 +24,7 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import {
   resolveThreadWorkspaceCwd,
   ThreadWorkspaceFolderMissingError,
+  ThreadWorkspaceRepositoryUnreadableError,
 } from "../workspace/threadWorkspaceCwd.ts";
 import * as ProjectService from "./ProjectService.ts";
 
@@ -126,6 +127,7 @@ export const ProjectSetupScriptRunnerError = Schema.Union([
   ProjectSetupScriptProjectNotFoundError,
   ProjectSetupScriptUnsupportedShellError,
   ThreadWorkspaceFolderMissingError,
+  ThreadWorkspaceRepositoryUnreadableError,
 ]);
 export type ProjectSetupScriptRunnerError = typeof ProjectSetupScriptRunnerError.Type;
 

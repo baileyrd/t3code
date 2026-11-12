@@ -4,9 +4,8 @@ import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import type * as ProcessRunner from "../processRunner.ts";
 import type { SparseCheckoutPaths } from "../vcs/sparseCheckoutPatterns.ts";
-import { makePinnedCargo } from "./pinnedCargo.ts";
+import { type CargoMetadataReader, comparableDir, manifestDir } from "./cargoMetadata.ts";
 
 const ResolvedCargoMetadata = Schema.Struct({
   packages: Schema.Array(
@@ -37,14 +36,6 @@ const decodeResolvedCargoMetadata = Schema.decodeUnknownOption(
   Schema.fromJsonString(ResolvedCargoMetadata),
 );
 
-const sameDir = (left: string, right: string) => {
-  const normalize = (value: string) => value.replace(/[\\/]+$/, "").replaceAll("\\", "/");
-  return /^[a-zA-Z]:/.test(left)
-    ? normalize(left).toLowerCase() === normalize(right).toLowerCase()
-    : normalize(left) === normalize(right);
-};
-const manifestDir = (manifestPath: string) => manifestPath.replace(/[\\/][^\\/]+$/, "");
-
 /**
  * The crate at `crateDir` (first) and the local crates it builds against, dev-only ones for itself
  * alone, as folders; plus every local package's manifest and targets, which cargo loads to resolve
@@ -56,7 +47,9 @@ export function cargoSparsePaths(
 ): SparseCheckoutPaths | null {
   const packages = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
   const crate = metadata.packages.find(
-    (pkg) => pkg.source === null && sameDir(manifestDir(pkg.manifest_path), crateDir),
+    (pkg) =>
+      pkg.source === null &&
+      comparableDir(manifestDir(pkg.manifest_path)) === comparableDir(crateDir),
   );
   if (crate === undefined) return null;
   const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
@@ -82,7 +75,7 @@ export function cargoSparsePaths(
 }
 
 interface CargoSparsePathServices {
-  readonly processRunner: ProcessRunner.ProcessRunner["Service"];
+  readonly cargo: CargoMetadataReader["Service"];
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
 }
@@ -92,23 +85,14 @@ const METADATA_ARGS = ["metadata", "--format-version", "1", "--offline", "--lock
 
 /**
  * `read(cwd)` gives the sparse paths for the crate at `cwd`, or null when it is no crate or cargo
- * fails. `opens(cwd)` says whether cargo can resolve the workspace from `cwd`, to check a sparse
- * worktree before handing it over. Both use the full graph, which follows path dependencies
- * through `[patch]`; --locked never writes Cargo.lock.
+ * fails, as when a sparse worktree lacks a manifest. It reads the full graph, which follows path
+ * dependencies through `[patch]`; --locked never writes Cargo.lock.
  */
 export function makeCargoSparsePathReader(services: CargoSparsePathServices) {
-  const { fileSystem, path } = services;
-  const cargo = makePinnedCargo(services);
+  const { cargo, fileSystem, path } = services;
   const cache = new Map<number, SparseCheckoutPaths>();
   const readText = (file: string) =>
     fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => null));
-  const runMetadata = (cwd: string) =>
-    cargo.run({
-      cwd,
-      args: METADATA_ARGS,
-      timeout: "30 seconds",
-      maxOutputBytes: 64 * 1024 * 1024,
-    });
 
   /** The crate's manifest and the nearest lockfile with its workspace manifest, or null. */
   const cacheKey = Effect.fn("CargoSparsePaths.cacheKey")(function* (cwd: string) {
@@ -131,7 +115,14 @@ export function makeCargoSparsePathReader(services: CargoSparsePathServices) {
     if (key === null) return null;
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
-    const stdout = yield* runMetadata(physicalCwd);
+    const stdout = yield* cargo.run(physicalCwd, METADATA_ARGS).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("cargo couldn't list the crate's paths", {
+          cwd: physicalCwd,
+          reason: error.reason,
+        }).pipe(Effect.as(null)),
+      ),
+    );
     if (stdout === null) return null;
     const metadata = decodeResolvedCargoMetadata(stdout);
     if (metadata._tag === "None") return null;
@@ -143,7 +134,5 @@ export function makeCargoSparsePathReader(services: CargoSparsePathServices) {
     return paths;
   });
 
-  const opens = (cwd: string) => runMetadata(cwd).pipe(Effect.map((stdout) => stdout !== null));
-
-  return { read, opens };
+  return { read };
 }

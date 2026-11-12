@@ -28,8 +28,11 @@ const DEFAULT_FAILURE_TTL = Duration.seconds(5);
 
 export interface ProjectEnrichment {
   readonly repositoryIdentity: RepositoryIdentity | null;
-  /** The project's folder below its repository root; null until resolved or outside a repository. */
-  readonly repositorySubdirectory: string | null;
+  /**
+   * The project's folder below its repository root; null outside a repository. Absent until
+   * resolved or while git cannot read the repository, so clients keep the folder they know.
+   */
+  readonly repositorySubdirectory?: string | null;
   readonly faviconPath: string | null;
   readonly repositoryIdentityResolved: boolean;
 }
@@ -82,6 +85,25 @@ function isSuccessfullyResolved<A, E>(cached: Option.Option<Exit.Exit<A, E>>): b
     onNone: () => false,
     onSome: (exit) => Exit.isSuccess(exit),
   });
+}
+
+function subdirectoryField<E>(
+  cached: Option.Option<Exit.Exit<string | null, E>>,
+): Pick<ProjectEnrichment, "repositorySubdirectory"> {
+  if (Option.isNone(cached) || Exit.isFailure(cached.value)) return {};
+  return { repositorySubdirectory: cached.value.value };
+}
+
+/** The fields a project takes from its enrichment; the folder only once resolved. */
+export function projectEnrichmentFields(
+  enrichment: ProjectEnrichment,
+): Pick<ProjectEnrichment, "repositoryIdentity" | "repositorySubdirectory"> {
+  return enrichment.repositorySubdirectory === undefined
+    ? { repositoryIdentity: enrichment.repositoryIdentity }
+    : {
+        repositoryIdentity: enrichment.repositoryIdentity,
+        repositorySubdirectory: enrichment.repositorySubdirectory,
+      };
 }
 
 interface EnrichmentWorkLane {
@@ -149,8 +171,14 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     },
   );
   const subdirectoryCache = yield* Cache.makeWith(
-    (workspaceRoot: string) => resolveProjectSubdirectory(workspace, workspaceRoot),
-    { capacity: cacheCapacity, timeToLive: () => DEFAULT_SUCCESS_TTL },
+    (workspaceRoot: string) => Effect.exit(resolveProjectSubdirectory(workspace, workspaceRoot)),
+    {
+      capacity: cacheCapacity,
+      timeToLive: Exit.match({
+        onFailure: () => DEFAULT_FAILURE_TTL,
+        onSuccess: (result) => (Exit.isSuccess(result) ? DEFAULT_SUCCESS_TTL : DEFAULT_FAILURE_TTL),
+      }),
+    },
   );
   const faviconCache = yield* Cache.makeWith(
     (workspaceRoot: string) => Effect.exit(faviconResolver.resolvePath(workspaceRoot)),
@@ -196,7 +224,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
 
   const logFailure = <A, E>(
     workspaceRoot: string,
-    field: "repositoryIdentity" | "faviconPath",
+    field: "repositoryIdentity" | "repositorySubdirectory" | "faviconPath",
     result: Exit.Exit<A, E>,
   ) =>
     Exit.isFailure(result)
@@ -212,6 +240,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       const repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
       yield* logFailure(workspaceRoot, "repositoryIdentity", repositoryIdentity);
       const repositorySubdirectory = yield* Cache.get(subdirectoryCache, workspaceRoot);
+      yield* logFailure(workspaceRoot, "repositorySubdirectory", repositorySubdirectory);
       const faviconPath = yield* Cache.getSuccess(faviconCache, workspaceRoot);
       const repositoryIdentityResolved = Exit.isSuccess(repositoryIdentity);
       yield* PubSub.publish(changes, {
@@ -219,7 +248,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         repositoryIdentityResolved,
         enrichment: {
           repositoryIdentity: availableValue(Option.some(repositoryIdentity)),
-          repositorySubdirectory,
+          ...subdirectoryField(Option.some(repositorySubdirectory)),
           faviconPath: availableValue(faviconPath),
           repositoryIdentityResolved,
         },
@@ -297,7 +326,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         repositoryIdentity: repositoryIdentityResolved
           ? availableValue(repositoryIdentity)
           : (lastRepositoryIdentities.get(workspaceRoot) ?? null),
-        repositorySubdirectory: Option.getOrNull(repositorySubdirectory),
+        ...subdirectoryField(repositorySubdirectory),
         faviconPath: availableValue(faviconPath),
         repositoryIdentityResolved,
       };

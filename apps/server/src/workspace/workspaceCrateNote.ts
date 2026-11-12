@@ -1,40 +1,16 @@
 import * as Effect from "effect/Effect";
-import * as Hash from "effect/Hash";
 import type * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 
 import type * as ProcessRunner from "../processRunner.ts";
-import { makePinnedCargo } from "./pinnedCargo.ts";
 
-const CargoDependency = Schema.Struct({
-  name: Schema.String,
-  kind: Schema.NullOr(Schema.String),
-  path: Schema.optional(Schema.String),
-});
-
-const CargoMetadata = Schema.Struct({
-  workspace_root: Schema.String,
-  packages: Schema.Array(
-    Schema.Struct({
-      name: Schema.String,
-      manifest_path: Schema.String,
-      dependencies: Schema.Array(CargoDependency),
-    }),
-  ),
-});
-type CargoMetadata = typeof CargoMetadata.Type;
-
-const decodeCargoMetadata = Schema.decodeUnknownOption(Schema.fromJsonString(CargoMetadata));
-
-// Windows paths compare by `/` and case: cargo and realPath may disagree on either.
-const comparableDir = (value: string) => {
-  const trimmed = value.replace(/[\\/]+$/, "");
-  return /^[a-zA-Z]:|^[\\/]{2}/.test(trimmed)
-    ? trimmed.replaceAll("\\", "/").toLowerCase()
-    : trimmed;
-};
-const manifestDir = (manifestPath: string) => manifestPath.replace(/[\\/][^\\/]+$/, "");
+import {
+  type CargoMetadata,
+  type CargoMetadataReader,
+  comparableDir,
+  manifestDir,
+} from "./cargoMetadata.ts";
 
 /** The member crate rooted at `crateDir` and the workspace crates it depends on, skipping dev-only ones. */
 export function cargoWorkspaceDependencies(
@@ -62,62 +38,30 @@ export function workspaceCrateNoteText(
   result: ReturnType<typeof cargoWorkspaceDependencies>,
   sparse = false,
 ): string {
-  if (result === null) return "";
+  if (result === null || (result.dependencies.length === 0 && !sparse)) return "";
   const crate = `This folder is the \`${result.crate}\` crate of a Cargo workspace.`;
   const dependencies =
     result.dependencies.length === 0
       ? ""
       : ` Its workspace dependencies: ${result.dependencies.join(", ")}.`;
-  if (sparse) {
-    return `${crate}${dependencies} This worktree is a sparse checkout of only those crates; run \`git sparse-checkout add <folder>\` before working in another.`;
-  }
-  return dependencies === "" ? "" : `${crate}${dependencies}`;
-}
-
-const WORKSPACE_TABLE = /^\s*\[workspace\]/m;
-const CACHE_CAPACITY = 64;
-
-interface WorkspaceCrateNoteServices {
-  readonly processRunner: ProcessRunner.ProcessRunner["Service"];
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
+  const hint = sparse
+    ? " This worktree is a sparse checkout of only those crates; run `git sparse-checkout add <folder>` before working in another."
+    : "";
+  return `${crate}${dependencies}${hint}`;
 }
 
 /**
  * Names the crate a thread works in and its workspace dependencies, so the agent knows where
- * to look outside its folder without running `cargo tree`. Any failure yields "".
- *
- * Crates are cached by the manifests' contents, so worktrees of one commit run cargo once.
+ * to look outside its folder without running `cargo tree`. Any failure yields "": the note sits
+ * on turn start, so it waits at most 5 seconds for cargo.
  */
-export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteServices) {
-  const { fileSystem, path } = services;
-  const cargo = makePinnedCargo(services);
-  const crates = new Map<number, ReturnType<typeof cargoWorkspaceDependencies>>();
-  const readText = (file: string) =>
-    fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => null));
-
-  /** The nearest workspace manifest above `cwd`. */
-  const findWorkspace = Effect.fn("WorkspaceCrateNote.findWorkspace")(function* (cwd: string) {
-    for (let dir = cwd; ; dir = path.dirname(dir)) {
-      const manifest = yield* readText(path.join(dir, "Cargo.toml"));
-      if (manifest !== null && WORKSPACE_TABLE.test(manifest)) return dir;
-      if (path.dirname(dir) === dir) return null;
-    }
-  });
-
-  const readCrate = Effect.fn("WorkspaceCrateNote.readCrate")(function* (cwd: string) {
-    const stdout = yield* cargo.run({
-      cwd,
-      args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
-      timeout: "5 seconds",
-      maxOutputBytes: 8 * 1024 * 1024,
-    });
-    if (stdout === null) return null;
-    const metadata = decodeCargoMetadata(stdout);
-    if (metadata._tag === "None") return null;
-    return { crate: cargoWorkspaceDependencies(metadata.value, cwd) };
-  });
-
+export function makeWorkspaceCrateNoteReader(services: {
+  readonly cargo: CargoMetadataReader["Service"];
+  readonly processRunner: ProcessRunner.ProcessRunner["Service"];
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}) {
+  const { cargo, fileSystem, path } = services;
   const isSparseCheckout = (cwd: string) =>
     services.processRunner
       .run({
@@ -135,29 +79,24 @@ export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteService
   return Effect.fn("readWorkspaceCrateNote")(function* (cwd: string) {
     // Cargo reports physical paths.
     const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
-    const ownManifest = yield* readText(path.join(physicalCwd, "Cargo.toml"));
+    const ownManifest = yield* fileSystem
+      .readFileString(path.join(physicalCwd, "Cargo.toml"))
+      .pipe(Effect.orElseSucceed(() => null));
     if (ownManifest === null) return "";
-    const workspaceRoot = yield* findWorkspace(physicalCwd);
+    const workspaceRoot = yield* cargo.findWorkspaceRoot(physicalCwd);
     if (workspaceRoot === null || workspaceRoot === physicalCwd) return "";
-    const key = Hash.string(
-      [
-        path.relative(workspaceRoot, physicalCwd),
-        ownManifest,
-        (yield* readText(path.join(workspaceRoot, "Cargo.toml"))) ?? "",
-        (yield* readText(path.join(workspaceRoot, "Cargo.lock"))) ?? "",
-      ].join("\0"),
+    // A cold workspace keeps loading after the turn starts, ready for the next thread.
+    const metadata = yield* cargo.read(workspaceRoot).pipe(
+      Effect.timeoutOption("5 seconds"),
+      Effect.map(Option.getOrNull),
+      Effect.orElseSucceed(() => null),
     );
-    let crate = crates.get(key);
-    if (crate === undefined) {
-      const read = yield* readCrate(physicalCwd);
-      // Failures stay uncached so a slow or locked cargo gets another try on the next thread.
-      if (read === null) return "";
-      crate = read.crate;
-      const oldest = crates.keys().next();
-      if (crates.size >= CACHE_CAPACITY && oldest.done !== true) crates.delete(oldest.value);
-      crates.set(key, crate);
-    }
-    if (crate === null) return "";
-    return workspaceCrateNoteText(crate, yield* isSparseCheckout(physicalCwd));
+    if (metadata === null) return "";
+    // Cached metadata may come from another worktree of the same commit.
+    const crateDir = path.join(metadata.workspace_root, path.relative(workspaceRoot, physicalCwd));
+    return workspaceCrateNoteText(
+      cargoWorkspaceDependencies(metadata, crateDir),
+      yield* isSparseCheckout(physicalCwd),
+    );
   });
 }

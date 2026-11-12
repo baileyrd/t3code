@@ -59,7 +59,7 @@ function SparseWorktreesRow() {
       serverScoped
       settingKeys={["sparseWorktrees"]}
       {...searchableSetting("sparse-worktrees")}
-      description="For a project that is one crate of a Cargo workspace, new worktrees check out only that crate and the workspace crates it depends on. Uses a full checkout when Cargo can't read the workspace."
+      description="For one crate of a Cargo workspace, new worktrees check out only that crate and the crates it depends on. Asking Cargo adds a few seconds; uses a full checkout when Cargo can't read it."
       resetAction={
         settings.sparseWorktrees !== DEFAULT_UNIFIED_SETTINGS.sparseWorktrees ? (
           <SettingResetButton

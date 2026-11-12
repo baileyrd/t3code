@@ -44,6 +44,30 @@ export const FilesystemBrowseResult = Schema.Struct({
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
 
+export const FilesystemWorkspacePackagesInput = Schema.Struct({
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
+});
+export type FilesystemWorkspacePackagesInput = typeof FilesystemWorkspacePackagesInput.Type;
+
+export const FilesystemWorkspacePackage = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  /** From the workspace root, with `/` separators. */
+  relativePath: TrimmedNonEmptyString,
+  fullPath: TrimmedNonEmptyString,
+});
+export type FilesystemWorkspacePackage = typeof FilesystemWorkspacePackage.Type;
+
+export const FilesystemWorkspacePackagesResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    packages: Schema.Array(FilesystemWorkspacePackage),
+  }),
+  Schema.Struct({ status: Schema.Literal("not-workspace") }),
+  // A workspace whose packages could not be listed: cargo missing, failing, or too slow.
+  Schema.Struct({ status: Schema.Literal("failed"), reason: TrimmedNonEmptyString }),
+]);
+export type FilesystemWorkspacePackagesResult = typeof FilesystemWorkspacePackagesResult.Type;
+
 export const FilesystemBrowseFailure = Schema.Literals([
   "windows_path_unsupported",
   "current_project_required",

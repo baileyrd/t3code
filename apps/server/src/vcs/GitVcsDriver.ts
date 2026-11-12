@@ -142,8 +142,8 @@ export interface CreateWorktreeProgress {
 
 export interface SparseCheckout {
   readonly paths: SparseCheckoutPaths;
-  /** Whether the project's folder in the sparse worktree works; false checks out everything. */
-  readonly verify: (projectCwd: string) => Effect.Effect<boolean>;
+  /** The paths the project's folder needs within the sparse worktree; null checks out everything. */
+  readonly resolve: (projectCwd: string) => Effect.Effect<SparseCheckoutPaths | null>;
 }
 
 export interface CreateWorktreeOptions {

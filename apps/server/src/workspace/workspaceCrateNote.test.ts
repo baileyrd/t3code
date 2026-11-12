@@ -1,5 +1,7 @@
 import { assert, it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -8,6 +10,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { makeCargoMetadataReader } from "./cargoMetadata.ts";
 import {
   cargoWorkspaceDependencies,
   makeWorkspaceCrateNoteReader,
@@ -114,7 +117,6 @@ const output = (
 
 const workspaceFiles: Readonly<Record<string, string>> = {
   "/repo/Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
-  "/repo/Cargo.lock": "version = 4\n",
   "/repo/crates/mill/Cargo.toml": '[package]\nname = "mill"\n',
 };
 
@@ -122,6 +124,8 @@ const workspaceFiles: Readonly<Record<string, string>> = {
 const makeReader = (input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
+  /** Answers the first cargo run instead of `outputs`. */
+  readonly firstCargo?: Effect.Effect<ProcessRunner.ProcessRunOutput>;
   /** `"missing"` when rustup is not installed. */
   readonly rustupDefault?: ProcessRunner.ProcessRunOutput | "missing";
   readonly sparse?: boolean;
@@ -150,6 +154,7 @@ const makeReader = (input: {
         }
         if (runInput.command !== "rustup") {
           runs.push(runInput);
+          if (runs.length === 1 && input.firstCargo !== undefined) return input.firstCargo;
           return Effect.succeed(outputs.shift() ?? output({ stdout: JSON.stringify(metadata) }));
         }
         rustupRuns.push(runInput);
@@ -170,7 +175,12 @@ const makeReader = (input: {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     return {
-      read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }),
+      read: makeWorkspaceCrateNoteReader({
+        cargo: makeCargoMetadataReader({ processRunner, fileSystem, path }),
+        processRunner,
+        fileSystem,
+        path,
+      }),
       runs,
       rustupRuns,
     };
@@ -187,10 +197,17 @@ describe("makeWorkspaceCrateNoteReader", () => {
       Effect.gen(function* () {
         const { read, runs, rustupRuns } = yield* makeReader({});
         assert.equal(yield* read("/link/crates/mill"), millNote);
-        assert.equal(runs[0]?.cwd, "/repo/crates/mill");
+        assert.equal(runs[0]?.cwd, "/repo");
         assert.deepEqual(runs[0]?.env, {
           RUSTUP_TOOLCHAIN: "stable-x86_64-unknown-linux-gnu",
           RUSTUP_AUTO_INSTALL: "0",
+          // A branch's `.cargo/config.toml` must not pick the rustc cargo runs.
+          RUSTC: "rustc",
+          RUSTC_WRAPPER: "",
+          RUSTC_WORKSPACE_WRAPPER: "",
+          CARGO_BUILD_RUSTC: "rustc",
+          CARGO_BUILD_RUSTC_WRAPPER: "",
+          CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: "",
         });
         assert.equal(rustupRuns[0]?.cwd, "/");
       }).pipe(Effect.provide(Path.layer)),
@@ -241,9 +258,30 @@ describe("makeWorkspaceCrateNoteReader", () => {
     Effect.gen(function* () {
       const { read, runs, rustupRuns } = yield* makeReader({ outputs: [failure] });
       assert.equal(yield* read("/repo/crates/mill"), "");
+      yield* TestClock.adjust("10 seconds");
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
       assert.equal(rustupRuns.length, rustupReads);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("stops waiting after 5 seconds and leaves cargo's answer for the next turn", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const { read, runs } = yield* makeReader({
+        firstCargo: Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+          Effect.as(output({ stdout: JSON.stringify(metadata) })),
+        ),
+      });
+      const first = yield* Effect.forkChild(read("/repo/crates/mill"));
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("5 seconds");
+      assert.equal(yield* Fiber.join(first), "");
+      yield* Deferred.succeed(gate, undefined);
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.equal(runs.length, 1);
     }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -257,7 +295,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
       );
       const { read, runs } = yield* makeReader({ files });
       yield* read("/missing/crates/mill");
-      assert.equal(runs[0]?.cwd, "/missing/crates/mill");
+      assert.equal(runs[0]?.cwd, "/missing");
     }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -281,10 +319,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({ rustupDefault: "missing" });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
-      assert.deepEqual(runs[0]?.env, {
-        RUSTUP_TOOLCHAIN: "t3code-no-toolchain",
-        RUSTUP_AUTO_INSTALL: "0",
-      });
+      assert.include(runs[0]?.env, { RUSTUP_TOOLCHAIN: "t3code-no-toolchain" });
     }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -294,6 +329,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
         rustupDefault: output({ timedOut: true, code: null }),
       });
       assert.equal(yield* read("/repo/crates/mill"), "");
+      yield* TestClock.adjust("10 seconds");
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),
