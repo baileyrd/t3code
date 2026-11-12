@@ -62,6 +62,8 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { readWorkspaceCrateNote } from "../workspace/workspaceCrateNote.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
   isRestartNoteContinuation,
@@ -169,6 +171,7 @@ export const layer: Layer.Layer<
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
+  | ProcessRunner.ProcessRunner
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -187,6 +190,11 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const workspaceNoteServices = {
+      processRunner: yield* ProcessRunner.ProcessRunner,
+      fileSystem,
+      path,
+    };
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
       function* (cwd: string) {
@@ -902,6 +910,12 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
+      // Only a thread's first turn: later turns already carry it in the native history.
+      const workspaceNote =
+        projection.providerTurns.length === 0 && !goalCommand && resolvedRuntimePolicy.cwd != null
+          ? yield* readWorkspaceCrateNote(workspaceNoteServices, resolvedRuntimePolicy.cwd)
+          : "";
+      const startNote = [workspaceNote, restartNote].filter((part) => part !== "").join("\n\n");
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -1047,7 +1061,7 @@ export const layer: Layer.Layer<
             return handoffBudget({
               tokenCap,
               modelContextWindow,
-              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+              userText: startNote === "" ? userText : `${startNote}\n\n${userText}`,
               attachments: message.attachments,
               providerThread: budgetProviderThread,
               nativeContextEstimate:
@@ -1753,7 +1767,7 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const context = [workspaceNote, delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1820,7 +1834,7 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
-        restartNote === "" &&
+        startNote === "" &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
