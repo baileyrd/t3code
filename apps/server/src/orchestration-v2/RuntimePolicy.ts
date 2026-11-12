@@ -23,9 +23,12 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import {
   resolveThreadWorkspaceCwd,
   ThreadWorkspaceFolderMissingError,
+  ThreadWorkspaceRepositoryUnreadableError,
 } from "../workspace/threadWorkspaceCwd.ts";
 
-const isFolderMissing = Schema.is(ThreadWorkspaceFolderMissingError);
+const isFolderUnknown = Schema.is(
+  Schema.Union([ThreadWorkspaceFolderMissingError, ThreadWorkspaceRepositoryUnreadableError]),
+);
 
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
@@ -37,7 +40,7 @@ export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyR
 ) {
   override get message(): string {
     const base = `Failed to resolve runtime policy for provider instance ${this.providerInstanceId} in project ${this.projectId}.`;
-    return isFolderMissing(this.cause) ? `${base} ${this.cause.message}` : base;
+    return isFolderUnknown(this.cause) ? `${base} ${this.cause.message}` : base;
   }
 }
 

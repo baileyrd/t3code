@@ -37,8 +37,7 @@ export const make = Effect.gen(function* () {
       .realPath(input.path)
       .pipe(Effect.orElseSucceed(() => input.path));
     if (!(yield* cargo.isWorkspaceRoot(root))) return NOT_WORKSPACE;
-    // Someone is waiting on this list, unlike the crate note on turn start, so cargo gets longer.
-    return yield* cargo.read(root, { timeout: "30 seconds" }).pipe(
+    return yield* cargo.read(root).pipe(
       Effect.map((metadata): FilesystemWorkspacePackagesResult => ({
         status: "ok",
         packages: CargoMetadata.cargoWorkspaceMembers(metadata).map((pkg) => ({

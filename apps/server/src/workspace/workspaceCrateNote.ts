@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 
 import {
@@ -59,9 +60,12 @@ export function makeWorkspaceCrateNoteReader(services: {
     if (ownManifest === null) return "";
     const workspaceRoot = yield* cargo.findWorkspaceRoot(physicalCwd);
     if (workspaceRoot === null || workspaceRoot === physicalCwd) return "";
-    const metadata = yield* cargo
-      .read(workspaceRoot, { timeout: "5 seconds" })
-      .pipe(Effect.orElseSucceed(() => null));
+    // A cold workspace keeps loading after the turn starts, ready for the next thread.
+    const metadata = yield* cargo.read(workspaceRoot).pipe(
+      Effect.timeoutOption("5 seconds"),
+      Effect.map(Option.getOrNull),
+      Effect.orElseSucceed(() => null),
+    );
     if (metadata === null) return "";
     // Cached metadata may come from another worktree of the same commit.
     const crateDir = path.join(metadata.workspace_root, path.relative(workspaceRoot, physicalCwd));

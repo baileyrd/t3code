@@ -2,7 +2,6 @@ import { isCommandMissingCause } from "@t3tools/provider-core/server/snapshotPro
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
-import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Hash from "effect/Hash";
@@ -88,10 +87,20 @@ const CACHE_CAPACITY = 16;
 const TOOLCHAIN_TTL_MS = 5 * 60 * 1000;
 const FAILURE_TTL_MS = 10 * 1000;
 const CARGO_CONCURRENCY = 2;
+// Cold runs on large workspaces take seconds; callers that can't wait bound their own wait.
+const CARGO_TIMEOUT = "30 seconds";
+// `--no-deps` metadata of a few hundred crates is a few MB; leave room for much larger ones.
+const CARGO_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 // Pinned when rustup is missing: a lone rustup `cargo` shim still proxies, and refuses this name;
 // a non-rustup cargo ignores the variable.
 const NO_RUSTUP_TOOLCHAIN = "t3code-no-toolchain";
+
+/** The line that says why cargo failed: its first `error`, else its last line. */
+const cargoFailureLine = (stderr: string) => {
+  const lines = stderr.trim().split(/\r?\n/);
+  return (lines.find((line) => line.startsWith("error")) ?? lines.at(-1) ?? "").slice(0, 200);
+};
 
 const fail = (reason: string) => Effect.fail(new CargoMetadataError({ reason }));
 
@@ -208,20 +217,16 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
     return cachedToolchain.name;
   });
 
-  const runCargo = Effect.fn("CargoMetadata.runCargo")(function* (
-    root: string,
-    toolchain: string,
-    timeout: Duration.Input,
-  ) {
+  const runCargo = Effect.fn("CargoMetadata.runCargo")(function* (root: string, toolchain: string) {
     const output = yield* services.processRunner
       .run({
         command: "cargo",
         args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
         cwd: root,
         env: { RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
-        timeout,
+        timeout: CARGO_TIMEOUT,
         timeoutBehavior: "timedOutResult",
-        maxOutputBytes: 8 * 1024 * 1024,
+        maxOutputBytes: CARGO_MAX_OUTPUT_BYTES,
       })
       .pipe(
         Effect.catch((error) =>
@@ -234,7 +239,7 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
       );
     if (output.timedOut) return yield* fail("`cargo metadata` took too long.");
     if (output.code !== 0) {
-      const detail = output.stderr.trim().split("\n").at(-1)?.slice(0, 200) ?? "";
+      const detail = cargoFailureLine(output.stderr);
       return yield* fail(`\`cargo metadata\` failed${detail === "" ? "." : `: ${detail}`}`);
     }
     const metadata = decodeCargoMetadata(output.stdout);
@@ -243,13 +248,9 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
   });
 
   /** Runs cargo for one workspace state and records what it found. */
-  const load = Effect.fn("CargoMetadata.load")(function* (
-    root: string,
-    rootManifest: string,
-    timeout: Duration.Input,
-  ) {
+  const load = Effect.fn("CargoMetadata.load")(function* (root: string, rootManifest: string) {
     const toolchain = yield* resolveToolchain(root);
-    const metadata = yield* runCargo(root, toolchain, timeout).pipe(
+    const metadata = yield* runCargo(root, toolchain).pipe(
       // Drop the toolchain in case it was switched or uninstalled.
       Effect.tapError(() => Effect.sync(() => (cachedToolchain = undefined))),
     );
@@ -265,11 +266,11 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
   const running = new Map<number, Deferred.Deferred<CargoMetadata, CargoMetadataError>>();
   const failures = new Map<number, { readonly error: CargoMetadataError; readonly at: number }>();
 
-  /** Metadata of the workspace rooted at the physical path `root`. */
-  const read = Effect.fn("CargoMetadata.read")(function* (
-    root: string,
-    options: { readonly timeout: Duration.Input },
-  ) {
+  /**
+   * Metadata of the workspace rooted at the physical path `root`. Cargo runs on its own fiber, so
+   * a caller that stops waiting leaves the result cached for the next one.
+   */
+  const read = Effect.fn("CargoMetadata.read")(function* (root: string) {
     const rootManifest = yield* readText(path.join(root, "Cargo.toml"));
     if (rootManifest === null) return yield* fail("This folder has no `Cargo.toml`.");
     const knownMembers = membersByRootManifest.get(Hash.string(rootManifest));
@@ -287,16 +288,21 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
     if (pending !== undefined) return yield* Deferred.await(pending);
     const deferred = Deferred.makeUnsafe<CargoMetadata, CargoMetadataError>();
     running.set(key, deferred);
-    return yield* cargoRuns
-      .withPermits(1)(load(root, rootManifest, options.timeout))
+    yield* cargoRuns
+      .withPermits(1)(load(root, rootManifest))
       .pipe(
-        Effect.tapError((error) => Effect.sync(() => remember(failures, key, { error, at: now }))),
+        // Stamped when cargo gives up, so a 30s timeout is still reused for the full window.
+        Effect.tapError((error) =>
+          Clock.currentTimeMillis.pipe(Effect.map((at) => remember(failures, key, { error, at }))),
+        ),
         Effect.onExit((exit) =>
           Effect.sync(() => running.delete(key)).pipe(
             Effect.andThen(Deferred.done(deferred, exit)),
           ),
         ),
+        Effect.forkDetach,
       );
+    return yield* Deferred.await(deferred);
   });
 
   return { isWorkspaceRoot, findWorkspaceRoot, read };

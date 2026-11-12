@@ -14,6 +14,7 @@ import {
   resolveProjectSubdirectory,
   resolveThreadWorkspaceCwd,
   ThreadWorkspaceFolderMissingError,
+  ThreadWorkspaceRepositoryUnreadableError,
 } from "./threadWorkspaceCwd.ts";
 
 const layer = VcsDriverRegistry.layer.pipe(
@@ -103,8 +104,10 @@ it.live("fails in a worktree when git cannot read the project's repository", () 
       workspaceRoot,
       worktreePath: path.join(base, "worktree"),
     }).pipe(Effect.flip);
-    assert.instanceOf(error, ThreadWorkspaceFolderMissingError);
-    assert.isTrue(error.repositoryUnreadable);
-    assert.isNull(yield* resolveProjectSubdirectory(unreadable, workspaceRoot));
+    assert.instanceOf(error, ThreadWorkspaceRepositoryUnreadableError);
+    const detectError = yield* resolveProjectSubdirectory(unreadable, workspaceRoot).pipe(
+      Effect.flip,
+    );
+    assert.instanceOf(detectError, VcsProcessSpawnError);
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );

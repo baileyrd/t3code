@@ -15,20 +15,29 @@ export class ThreadWorkspaceFolderMissingError extends Schema.TaggedError<Thread
   {
     worktreePath: Schema.String,
     subdirectory: Schema.String,
-    /** Git could not read the project's repository, so the folder inside the worktree is unknown. */
-    repositoryUnreadable: Schema.optional(Schema.Boolean),
-    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return this.repositoryUnreadable === true
-      ? `Git could not read the project's repository, so the project folder inside the worktree ${this.worktreePath} is unknown.`
-      : `The project folder \`${this.subdirectory}\` does not exist in the worktree ${this.worktreePath}.`;
+    return `The project folder \`${this.subdirectory}\` does not exist in the worktree ${this.worktreePath}.`;
   }
 }
 
-/** The project's folder below its repository root, failing when git cannot read the repository. */
-const detectProjectSubdirectory = Effect.fn("detectProjectSubdirectory")(function* (
+/** Git could not read the project's repository, so its folder inside the worktree is unknown. */
+export class ThreadWorkspaceRepositoryUnreadableError extends Schema.TaggedError<ThreadWorkspaceRepositoryUnreadableError>()(
+  "ThreadWorkspaceRepositoryUnreadableError",
+  { worktreePath: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `Git could not read the project's repository, so the project folder inside the worktree ${this.worktreePath} is unknown.`;
+  }
+}
+
+/**
+ * The project's folder below its repository root, `/`-separated; "" at the root, and null outside a
+ * repository. Fails when git cannot read the repository. Git reports physical roots, so both sides
+ * are compared as real paths.
+ */
+export const resolveProjectSubdirectory = Effect.fn("resolveProjectSubdirectory")(function* (
   services: WorkspaceServices,
   workspaceRoot: string,
 ) {
@@ -43,13 +52,6 @@ const detectProjectSubdirectory = Effect.fn("detectProjectSubdirectory")(functio
 });
 
 /**
- * The project's folder below its repository root, `/`-separated; "" at the root, and null outside a
- * repository. Git reports physical roots, so both sides are compared as real paths.
- */
-export const resolveProjectSubdirectory = (services: WorkspaceServices, workspaceRoot: string) =>
-  detectProjectSubdirectory(services, workspaceRoot).pipe(Effect.orElseSucceed(() => null));
-
-/**
  * Where a thread's agent, scripts and terminals work: the project folder, or the same folder inside
  * the thread's worktree. Fails rather than falling back to the worktree root when it is missing.
  */
@@ -60,15 +62,9 @@ export const resolveThreadWorkspaceCwd = Effect.fn("resolveThreadWorkspaceCwd")(
   const { worktreePath, workspaceRoot } = input;
   if (worktreePath === null) return workspaceRoot;
   // Guessing would run the agent at the worktree root, outside the project's folder.
-  const subdirectory = yield* detectProjectSubdirectory(services, workspaceRoot).pipe(
+  const subdirectory = yield* resolveProjectSubdirectory(services, workspaceRoot).pipe(
     Effect.mapError(
-      (cause) =>
-        new ThreadWorkspaceFolderMissingError({
-          worktreePath,
-          subdirectory: "",
-          repositoryUnreadable: true,
-          cause,
-        }),
+      (cause) => new ThreadWorkspaceRepositoryUnreadableError({ worktreePath, cause }),
     ),
   );
   const cwd = projectScriptCwd({

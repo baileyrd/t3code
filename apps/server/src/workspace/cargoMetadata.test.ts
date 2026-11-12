@@ -140,7 +140,7 @@ const makeReader = (input: {
     const path = yield* Path.Path;
     const reader = makeCargoMetadataReader({ processRunner, fileSystem, path });
     return {
-      read: () => reader.read("/repo", { timeout: "30 seconds" }),
+      read: () => reader.read("/repo"),
       runs,
       addCrate: (dir: string, name: string) => {
         files.set(`/repo/${dir}/Cargo.toml`, `[package]\nname = "${name}"\n`);
@@ -163,31 +163,38 @@ describe("makeCargoMetadataReader", () => {
     }),
   );
 
-  effectIt.effect("shares one cargo run between reads that overlap", () =>
-    Effect.gen(function* () {
-      const started = yield* Deferred.make<void>();
-      const gate = yield* Deferred.make<void>();
-      const metadata = output({ stdout: JSON.stringify(metadataOf({ "crates/mill": "mill" })) });
-      const { read, runs } = yield* makeReader({
-        cargo: Deferred.succeed(started, undefined).pipe(
-          Effect.andThen(Deferred.await(gate)),
-          Effect.as(metadata),
-        ),
-      });
-      const first = yield* Effect.forkChild(read());
-      yield* Deferred.await(started);
-      const second = yield* Effect.forkChild(read());
-      yield* Deferred.succeed(gate, undefined);
-      assert.deepEqual(names(yield* Fiber.join(first)), ["mill"]);
-      assert.deepEqual(names(yield* Fiber.join(second)), ["mill"]);
-      assert.equal(runs.length, 1);
-    }),
+  effectIt.effect(
+    "shares one cargo run between reads that overlap, even when the first gives up",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        const metadata = output({ stdout: JSON.stringify(metadataOf({ "crates/mill": "mill" })) });
+        const { read, runs } = yield* makeReader({
+          cargo: Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(gate)),
+            Effect.as(metadata),
+          ),
+        });
+        const first = yield* Effect.forkChild(read());
+        yield* Deferred.await(started);
+        const second = yield* Effect.forkChild(read());
+        // The first caller giving up must not take the shared run down with it.
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(gate, undefined);
+        assert.deepEqual(names(yield* Fiber.join(second)), ["mill"]);
+        assert.deepEqual(names(yield* read()), ["mill"]);
+        assert.equal(runs.length, 1);
+      }),
   );
 
-  effectIt.effect("reuses a failure for 10 seconds before running cargo again", () =>
+  effectIt.effect("reuses a timeout for 10 seconds after it ends, then runs cargo again", () =>
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({
-        cargo: Effect.succeed(output({ timedOut: true, code: null })),
+        // The run itself takes the 30 seconds it is allowed.
+        cargo: TestClock.adjust("30 seconds").pipe(
+          Effect.as(output({ timedOut: true, code: null })),
+        ),
       });
       yield* Effect.flip(read());
       yield* Effect.flip(read());
@@ -232,6 +239,19 @@ describe("makeCargoMetadataReader", () => {
         ),
       },
       "`cargo metadata` failed: error: no matching package",
+    ],
+    [
+      "a cargo that fails with a backtrace",
+      {
+        cargo: Effect.succeed(
+          output({
+            code: ChildProcessSpawner.ExitCode(101),
+            stderr:
+              "error: failed to load manifest\n\nCaused by:\n  stack backtrace:\n   0: main\n",
+          }),
+        ),
+      },
+      "`cargo metadata` failed: error: failed to load manifest",
     ],
     [
       "no default toolchain",

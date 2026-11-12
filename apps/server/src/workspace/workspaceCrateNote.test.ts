@@ -1,5 +1,7 @@
 import { assert, it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -116,6 +118,8 @@ const workspaceFiles: Readonly<Record<string, string>> = {
 const makeReader = (input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
+  /** Answers the first cargo run instead of `outputs`. */
+  readonly firstCargo?: Effect.Effect<ProcessRunner.ProcessRunOutput>;
   /** `"missing"` when rustup is not installed. */
   readonly rustupDefault?: ProcessRunner.ProcessRunOutput | "missing";
 }) => {
@@ -136,6 +140,7 @@ const makeReader = (input: {
       Effect.suspend(() => {
         if (runInput.command !== "rustup") {
           runs.push(runInput);
+          if (runs.length === 1 && input.firstCargo !== undefined) return input.firstCargo;
           return Effect.succeed(outputs.shift() ?? output({ stdout: JSON.stringify(metadata) }));
         }
         rustupRuns.push(runInput);
@@ -224,6 +229,26 @@ describe("makeWorkspaceCrateNoteReader", () => {
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
       assert.equal(rustupRuns.length, 2);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("stops waiting after 5 seconds and leaves cargo's answer for the next turn", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const { read, runs } = yield* makeReader({
+        firstCargo: Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+          Effect.as(output({ stdout: JSON.stringify(metadata) })),
+        ),
+      });
+      const first = yield* Effect.forkChild(read("/repo/crates/mill"));
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("5 seconds");
+      assert.equal(yield* Fiber.join(first), "");
+      yield* Deferred.succeed(gate, undefined);
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.equal(runs.length, 1);
     }).pipe(Effect.provide(Path.layer)),
   );
 

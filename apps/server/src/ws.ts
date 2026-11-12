@@ -871,8 +871,7 @@ const enrichProjectShells = Effect.fn("ws.orchestrationV2.enrichProjectShells")(
             Effect.map((enrichment) => ({
               project: {
                 ...project,
-                repositoryIdentity: enrichment.repositoryIdentity,
-                repositorySubdirectory: enrichment.repositorySubdirectory,
+                ...ProjectEnrichmentService.projectEnrichmentFields(enrichment),
               },
               repositoryIdentityResolved: enrichment.repositoryIdentityResolved,
             })),
@@ -1280,13 +1279,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             const enrichment = enrichments.get(project.workspaceRoot);
             return enrichment === undefined
               ? []
-              : [
-                  {
-                    ...project,
-                    repositoryIdentity: enrichment.repositoryIdentity,
-                    repositorySubdirectory: enrichment.repositorySubdirectory,
-                  },
-                ];
+              : [{ ...project, ...ProjectEnrichmentService.projectEnrichmentFields(enrichment) }];
           });
           return shellStreamItemFromEnrichmentRefresh({
             snapshot: {

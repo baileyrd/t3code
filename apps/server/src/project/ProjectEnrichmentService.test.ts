@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import type { RepositoryIdentity } from "@t3tools/contracts";
+import { type RepositoryIdentity, VcsProcessSpawnError } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -48,14 +48,14 @@ const layer = (
     | RepositoryIdentityResolver.RepositoryIdentityResolver
   >,
   options: ProjectEnrichment.ProjectEnrichmentServiceOptions = {},
+  detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"] = () =>
+    Effect.succeed({ repository: { rootPath: "/" } } as never),
 ) =>
   Layer.effect(ProjectEnrichment.ProjectEnrichmentService, ProjectEnrichment.make(options)).pipe(
     Layer.provide(metadataLayer),
     Layer.provide(
       Layer.merge(
-        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-          detect: () => Effect.succeed({ repository: { rootPath: "/" } } as never),
-        }),
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect }),
         FileSystem.layerNoop({}),
       ),
     ),
@@ -87,6 +87,51 @@ it.effect("publishes repository completion while favicon enrichment is still pen
       assert.equal(change.enrichment.repositorySubdirectory, "completed");
       assert.isNull(change.enrichment.faviconPath);
     }).pipe(Effect.provide(layer(layerMetadata)));
+  }),
+);
+
+it.effect("leaves the folder unresolved while git fails, then retries it after 5 seconds", () =>
+  Effect.gen(function* () {
+    const detects = yield* Ref.make(0);
+    const detect = () =>
+      Ref.updateAndGet(detects, (count) => count + 1).pipe(
+        Effect.flatMap((count) =>
+          count === 1
+            ? Effect.fail(
+                new VcsProcessSpawnError({
+                  operation: "test.detect",
+                  command: "git",
+                  cwd: "/completed",
+                  cause: new Error("spawn git EMFILE"),
+                }),
+              )
+            : Effect.succeed({ repository: { rootPath: "/" } } as never),
+        ),
+      );
+    const layerMetadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      const changes = yield* service.subscribeChanges;
+      yield* service.request("/completed");
+      const failed = yield* PubSub.take(changes);
+      assert.isTrue(failed.repositoryIdentityResolved);
+      assert.notProperty(failed.enrichment, "repositorySubdirectory");
+      assert.notProperty(yield* service.peek("/completed"), "repositorySubdirectory");
+
+      yield* TestClock.adjust("5 seconds");
+      yield* service.request("/completed");
+      const resolved = yield* PubSub.take(changes);
+      assert.equal(resolved.enrichment.repositorySubdirectory, "completed");
+    }).pipe(Effect.provide(layer(layerMetadata, {}, detect)));
   }),
 );
 
