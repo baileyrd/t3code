@@ -32,6 +32,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import { ChildProcessSpawner } from "effect/process";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
@@ -291,6 +292,8 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
   readonly recoveryReadFailure?: string;
+  /** A plain prompt that reaches the provider: no side chat, no handoff. */
+  readonly nativeTurn?: boolean;
   /** `cargo metadata` output for the thread's folder; without it, cargo fails. */
   readonly cargoMetadata?: string;
   readonly previousTurn?: {
@@ -799,12 +802,16 @@ function makeLocalCommandHarness(input: {
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
   const runProcess = vi.fn(() =>
-    Effect.succeed({
+    Effect.succeed<ProcessRunner.ProcessRunOutput>({
       stdout: input.cargoMetadata ?? "",
       stderr: "",
-      code: input.cargoMetadata === undefined ? 101 : 0,
+      code: ChildProcessSpawner.ExitCode(input.cargoMetadata === undefined ? 101 : 0),
       timedOut: false,
-    } as ProcessRunner.ProcessRunOutput),
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    }),
   );
   const sideChatThread = {
     ...providerThread,
@@ -825,8 +832,9 @@ function makeLocalCommandHarness(input: {
     forkThread,
     startTurn,
   };
+  const startsNativeTurn = input.sideChat !== undefined || input.nativeTurn === true;
   const open = vi.fn(() =>
-    input.sideChat !== undefined
+    startsNativeTurn
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
@@ -860,7 +868,7 @@ function makeLocalCommandHarness(input: {
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.sideChat !== undefined
+    startsNativeTurn
       ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
@@ -985,7 +993,20 @@ function makeLocalCommandHarness(input: {
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
-          ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
+          ? FileSystem.layerNoop({
+              exists: () => Effect.succeed(true),
+              readFileString: (file) =>
+                cargoManifests[file] === undefined || input.cargoMetadata === undefined
+                  ? Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "NotFound",
+                        module: "FileSystem",
+                        method: "readFileString",
+                        pathOrDescriptor: file,
+                      }),
+                    )
+                  : Effect.succeed(cargoManifests[file]),
+            })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
@@ -1010,7 +1031,7 @@ function makeLocalCommandHarness(input: {
               projection.runs.find((candidate) => candidate.id === id),
             ),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined
+            startsNativeTurn
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -1346,6 +1367,12 @@ effectIt.effect.each([
     }),
 );
 
+/** The crate fixture's manifests: `/tmp` is the workspace, the thread works in a member crate. */
+const cargoManifests: Readonly<Record<string, string>> = {
+  "/tmp/Cargo.toml": '[workspace]\nmembers = ["native-account-command", "rustils"]\n',
+  "/tmp/native-account-command/Cargo.toml": '[package]\nname = "mill"\n',
+};
+
 const millCrateMetadata = JSON.stringify({
   workspace_root: "/tmp",
   packages: [
@@ -1363,14 +1390,14 @@ effectIt.effect("names the thread's crate and its workspace dependencies on the 
     const harness = makeLocalCommandHarness({
       text: "Fix the parser",
       cargoMetadata: millCrateMetadata,
-      sideChat: { contextRun: "current" },
+      nativeTurn: true,
     });
 
     yield* harness.start;
 
     expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
       withInlineContext(
-        "This folder is the `mill` crate of a Cargo workspace. Its workspace dependencies: rustils.\n\nSIDE_CHAT_CONTEXT",
+        "This folder is the `mill` crate of a Cargo workspace. Its workspace dependencies: rustils.",
         "Fix the parser",
       ),
     ]);

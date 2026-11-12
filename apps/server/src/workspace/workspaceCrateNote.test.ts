@@ -1,6 +1,17 @@
+import { assert, it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import { ChildProcessSpawner } from "effect/process";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cargoWorkspaceDependencies, workspaceCrateNoteText } from "./workspaceCrateNote.ts";
+import type * as ProcessRunner from "../processRunner.ts";
+import {
+  cargoWorkspaceDependencies,
+  makeWorkspaceCrateNoteReader,
+  workspaceCrateNoteText,
+} from "./workspaceCrateNote.ts";
 
 const metadata = {
   workspace_root: "/repo",
@@ -30,6 +41,28 @@ describe("cargoWorkspaceDependencies", () => {
     });
   });
 
+  it("matches Windows paths whatever their separators and case", () => {
+    const windows = {
+      workspace_root: "C:\\repo",
+      packages: [
+        {
+          name: "mill",
+          manifest_path: "C:\\repo\\crates\\mill\\Cargo.toml",
+          dependencies: [{ name: "rustils", kind: null, path: "C:\\repo\\crates\\rustils" }],
+        },
+        {
+          name: "rustils",
+          manifest_path: "C:\\repo\\crates\\rustils\\Cargo.toml",
+          dependencies: [],
+        },
+      ],
+    };
+    expect(cargoWorkspaceDependencies(windows, "c:/repo/crates/mill")).toEqual({
+      crate: "mill",
+      dependencies: ["rustils"],
+    });
+  });
+
   it.each([
     ["the workspace root", "/repo"],
     ["a folder that is no member crate", "/repo/crates"],
@@ -48,4 +81,142 @@ describe("workspaceCrateNoteText", () => {
   it.each([null, { crate: "rustils", dependencies: [] }])("stays silent for %o", (result) => {
     expect(workspaceCrateNoteText(result)).toBe("");
   });
+});
+
+const notFound = (file: string) =>
+  PlatformError.systemError({
+    _tag: "NotFound",
+    module: "FileSystem",
+    method: "readFileString",
+    pathOrDescriptor: file,
+  });
+
+const output = (
+  overrides: Partial<ProcessRunner.ProcessRunOutput>,
+): ProcessRunner.ProcessRunOutput => ({
+  stdout: "",
+  stderr: "",
+  code: ChildProcessSpawner.ExitCode(0),
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+  ...overrides,
+});
+
+const workspaceFiles: Readonly<Record<string, string>> = {
+  "/repo/Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
+  "/repo/Cargo.lock": "version = 4\n",
+  "/repo/crates/mill/Cargo.toml": '[package]\nname = "mill"\n',
+};
+
+/** A reader over `files`, with `/link` a symlink to `/repo` and cargo answering with `outputs` in turn. */
+const makeReader = (input: {
+  readonly files?: Readonly<Record<string, string>>;
+  readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
+}) => {
+  const files = input.files ?? workspaceFiles;
+  const runs: ProcessRunner.ProcessRunInput[] = [];
+  const outputs = [...(input.outputs ?? [output({ stdout: JSON.stringify(metadata) })])];
+  const fileSystem = FileSystem.makeNoop({
+    readFileString: (file) =>
+      files[file] === undefined ? Effect.fail(notFound(file)) : Effect.succeed(files[file]),
+    realPath: (file) =>
+      file.startsWith("/missing")
+        ? Effect.fail(notFound(file))
+        : Effect.succeed(file.replace(/^\/link(?=\/|$)/, "/repo")),
+  });
+  const processRunner = {
+    run: (runInput: ProcessRunner.ProcessRunInput) =>
+      Effect.sync(() => {
+        runs.push(runInput);
+        return outputs.shift() ?? output({ stdout: JSON.stringify(metadata) });
+      }),
+  } as unknown as ProcessRunner.ProcessRunner["Service"];
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    return { read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }), runs };
+  });
+};
+
+const millNote =
+  "This folder is the `mill` crate of a Cargo workspace. Its workspace dependencies: codegen, rustils.";
+
+describe("makeWorkspaceCrateNoteReader", () => {
+  effectIt.effect(
+    "names the crate of a folder opened through a symlink, without rustup installs",
+    () =>
+      Effect.gen(function* () {
+        const { read, runs } = yield* makeReader({});
+        assert.equal(yield* read("/link/crates/mill"), millNote);
+        assert.equal(runs[0]?.cwd, "/repo/crates/mill");
+        assert.deepEqual(runs[0]?.env, { RUSTUP_AUTO_INSTALL: "0" });
+      }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("runs cargo once for worktrees with the same manifests", () =>
+    Effect.gen(function* () {
+      const copy = Object.fromEntries(
+        Object.entries(workspaceFiles).map(([file, text]) => [file.replace("/repo", "/wt"), text]),
+      );
+      const { read, runs } = yield* makeReader({ files: { ...workspaceFiles, ...copy } });
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.equal(yield* read("/wt/crates/mill"), millNote);
+      assert.equal(runs.length, 1);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect.each([
+    ["no manifest in the folder", { "/repo/Cargo.toml": workspaceFiles["/repo/Cargo.toml"]! }],
+    ["no workspace above it", { "/repo/crates/mill/Cargo.toml": "[package]\n" }],
+    [
+      "a toolchain that points rustup at a repository folder",
+      { ...workspaceFiles, "/repo/rust-toolchain.toml": '[toolchain]\npath = "/opt/evil"\n' },
+    ],
+  ] as const)("stays silent without running cargo for %s", ([, files]) =>
+    Effect.gen(function* () {
+      const { read, runs } = yield* makeReader({ files });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(runs.length, 0);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect.each([
+    ["a failing cargo", output({ code: ChildProcessSpawner.ExitCode(101) })],
+    ["a timeout", output({ timedOut: true, code: null })],
+    ["output that is not metadata", output({ stdout: "{" })],
+  ] as const)("stays silent on %s and tries again next time", ([, failure]) =>
+    Effect.gen(function* () {
+      const { read, runs } = yield* makeReader({ outputs: [failure] });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.equal(runs.length, 2);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("uses the folder as given when its real path can't be read", () =>
+    Effect.gen(function* () {
+      const files = Object.fromEntries(
+        Object.entries(workspaceFiles).map(([file, text]) => [
+          file.replace("/repo", "/missing"),
+          text,
+        ]),
+      );
+      const { read, runs } = yield* makeReader({ files });
+      yield* read("/missing/crates/mill");
+      assert.equal(runs[0]?.cwd, "/missing/crates/mill");
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("reads a pinned channel toolchain as usual", () =>
+    Effect.gen(function* () {
+      const files = {
+        ...workspaceFiles,
+        "/repo/rust-toolchain.toml": '[toolchain]\nchannel = "1.90"\n',
+      };
+      const { read } = yield* makeReader({ files });
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+    }).pipe(Effect.provide(Path.layer)),
+  );
 });
