@@ -63,7 +63,7 @@ import {
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { readWorkspaceCrateNote } from "../workspace/workspaceCrateNote.ts";
+import { makeWorkspaceCrateNoteReader } from "../workspace/workspaceCrateNote.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
   isRestartNoteContinuation,
@@ -190,11 +190,11 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
-    const workspaceNoteServices = {
+    const readWorkspaceCrateNote = makeWorkspaceCrateNoteReader({
       processRunner: yield* ProcessRunner.ProcessRunner,
       fileSystem,
       path,
-    };
+    });
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
       function* (cwd: string) {
@@ -913,7 +913,7 @@ export const layer: Layer.Layer<
       // Only a thread's first turn: later turns already carry it in the native history.
       const workspaceNote =
         projection.providerTurns.length === 0 && !goalCommand && resolvedRuntimePolicy.cwd != null
-          ? yield* readWorkspaceCrateNote(workspaceNoteServices, resolvedRuntimePolicy.cwd)
+          ? yield* readWorkspaceCrateNote(resolvedRuntimePolicy.cwd)
           : "";
       const startNote = [workspaceNote, restartNote].filter((part) => part !== "").join("\n\n");
       const tokenCap = yield* handoffTokenCapConfig.pipe(

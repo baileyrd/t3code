@@ -34,6 +34,7 @@ import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 const layerEventPersistence = EventSink.layer.pipe(
   Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
@@ -53,7 +54,8 @@ const layerServices = Layer.mergeAll(
   Layer.provideMerge(
     ProjectEnrichmentService.layer.pipe(
       Layer.provide(
-        Layer.merge(
+        Layer.mergeAll(
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
           Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
             resolve: () => Effect.succeed(null),
           }),

@@ -55,6 +55,21 @@ describe("resolveTerminalOpenLocation", () => {
   });
 });
 
+describe("resolveTerminalOpenLocation for a new terminal", () => {
+  it("opens in the project's folder inside the thread's worktree", () => {
+    expect(
+      resolveTerminalOpenLocation({
+        terminalLocation: null,
+        activeSessionLocation: null,
+        workspaceRoot: "/repo/crates/mill",
+        repositorySubdirectory: "crates/mill",
+        threadShellWorktreePath: "/worktrees/feature",
+        threadDetailWorktreePath: null,
+      }),
+    ).toEqual({ cwd: "/worktrees/feature/crates/mill", worktreePath: "/worktrees/feature" });
+  });
+});
+
 describe("pending terminal launches", () => {
   it("stages and consumes launch details for a specific terminal target", () => {
     const target = {

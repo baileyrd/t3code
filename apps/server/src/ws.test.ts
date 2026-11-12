@@ -2086,6 +2086,7 @@ it.effect.each([
           getAvailable: () =>
             Effect.succeed({
               repositoryIdentity: identity,
+              repositorySubdirectory: null,
               faviconPath: null,
               repositoryIdentityResolved: true,
             }),

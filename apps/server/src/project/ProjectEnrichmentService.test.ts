@@ -3,6 +3,7 @@ import type { RepositoryIdentity } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -12,6 +13,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ProjectEnrichment from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 const identity = (workspaceRoot: string, version = 1): RepositoryIdentity => ({
   canonicalKey: `example.test/v${version}${workspaceRoot}`,
@@ -49,6 +51,14 @@ const layer = (
 ) =>
   Layer.effect(ProjectEnrichment.ProjectEnrichmentService, ProjectEnrichment.make(options)).pipe(
     Layer.provide(metadataLayer),
+    Layer.provide(
+      Layer.merge(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          detect: () => Effect.succeed({ repository: { rootPath: "/" } } as never),
+        }),
+        FileSystem.layerNoop({}),
+      ),
+    ),
   );
 
 it.effect("publishes repository completion while favicon enrichment is still pending", () =>
@@ -74,6 +84,7 @@ it.effect("publishes repository completion while favicon enrichment is still pen
       assert.equal(change.workspaceRoot, "/completed");
       assert.isTrue(change.repositoryIdentityResolved);
       assert.equal(change.enrichment.repositoryIdentity?.canonicalKey, "example.test/v1/completed");
+      assert.equal(change.enrichment.repositorySubdirectory, "completed");
       assert.isNull(change.enrichment.faviconPath);
     }).pipe(Effect.provide(layer(layerMetadata)));
   }),

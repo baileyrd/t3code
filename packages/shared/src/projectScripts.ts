@@ -28,29 +28,50 @@ interface ProjectScriptRuntimeEnvInput {
   extraEnv?: Record<string, string>;
 }
 
-/** The project's folder below its repository root, `/`-separated; "" at the root or when unknown. */
+const WINDOWS_PATH = /^(?:[a-zA-Z]:|[\\/]{2})/;
+
+/**
+ * The project's folder below its repository root, `/`-separated; "" at the root, outside it, or
+ * when unknown. Git prints `C:/repo` for `C:\repo`, so Windows paths compare by `/` and case.
+ */
 export function projectSubdirectory(
   repositoryRoot: string | null | undefined,
   workspaceRoot: string,
 ): string {
   if (!repositoryRoot) return "";
-  const root = repositoryRoot.replace(/[\\/]+$/, "");
-  const rest = workspaceRoot.slice(root.length);
-  if (!workspaceRoot.startsWith(root) || !/^[\\/]/.test(rest)) return "";
-  return rest.replace(/^[\\/]+|[\\/]+$/g, "").replaceAll("\\", "/");
+  const windows = WINDOWS_PATH.test(repositoryRoot) || WINDOWS_PATH.test(workspaceRoot);
+  const normalize = (path: string) => {
+    const slashed = windows ? path.replaceAll("\\", "/") : path;
+    return slashed.replace(/\/+$/, "");
+  };
+  const root = normalize(repositoryRoot);
+  const workspace = normalize(workspaceRoot);
+  const prefix = `${root}/`;
+  const inside = windows
+    ? workspace.toLowerCase().startsWith(prefix.toLowerCase())
+    : workspace.startsWith(prefix);
+  if (!inside) return "";
+  const segments = workspace
+    .slice(prefix.length)
+    .split("/")
+    .filter((segment) => segment !== "");
+  return segments.some((segment) => segment === "." || segment === "..") ? "" : segments.join("/");
 }
 
-/** Where a thread works: the project folder, or the same folder inside the thread's worktree. */
+/**
+ * Where a thread works: the project folder, or the project's repository subdirectory inside the
+ * thread's worktree. The server publishes `repositorySubdirectory`; unknown means the worktree root.
+ */
 export function projectScriptCwd(input: {
   project: {
     cwd: string;
-    repositoryRoot?: string | null | undefined;
+    repositorySubdirectory?: string | null | undefined;
   };
   worktreePath?: string | null;
 }): string {
   const { worktreePath } = input;
   if (worktreePath == null) return input.project.cwd;
-  const subdirectory = projectSubdirectory(input.project.repositoryRoot, input.project.cwd);
+  const subdirectory = input.project.repositorySubdirectory ?? "";
   if (subdirectory === "") return worktreePath;
   const separator = worktreePath.includes("\\") && !worktreePath.includes("/") ? "\\" : "/";
   return `${worktreePath.replace(/[\\/]+$/, "")}${separator}${subdirectory.replaceAll("/", separator)}`;

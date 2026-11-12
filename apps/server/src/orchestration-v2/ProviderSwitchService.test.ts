@@ -296,3 +296,29 @@ it.effect("distinguishes compatible and incompatible instances of the same drive
     ),
   ),
 );
+
+it.effect.each([
+  ["the project folder inside the worktree", "/repo/crates/mill", "switch_model_in_session"],
+  ["another folder", "/repository/crates/mill", "restart_and_resume"],
+] as const)("treats a live session in %s as the thread's workspace or not", ([, cwd, expected]) =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const thread = projection();
+    const result = yield* service.plan({
+      projection: {
+        ...thread,
+        providerSessions: [
+          { ...thread.providerSessions[0]!, cwd, capabilities: CodexProviderCapabilitiesV2 },
+        ],
+      },
+      targetModelSelection: { instanceId: currentInstanceId, model: "gpt-5.2-codex" },
+    });
+    assert.equal(result.transition.type, expected);
+  }).pipe(
+    Effect.provide(
+      layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }, (input) =>
+        Effect.succeed(acpSelectionTransition(input)),
+      ),
+    ),
+  ),
+);

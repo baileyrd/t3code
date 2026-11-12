@@ -48,6 +48,18 @@ export class ProviderSwitchServiceV2 extends Context.Service<
   ProviderSwitchServiceV2Shape
 >()("t3/orchestration-v2/ProviderSwitchService/ProviderSwitchServiceV2") {}
 
+/** A session in the project's folder inside the thread's worktree still works in that worktree. */
+const sessionWorkspace = (
+  sessionCwd: string | undefined,
+  worktreePath: string | null,
+): string | null => {
+  if (sessionCwd === undefined) return worktreePath;
+  if (worktreePath === null) return sessionCwd;
+  const root = worktreePath.replace(/[\\/]+$/, "");
+  const inside = sessionCwd === root || /^[\\/]/.test(sessionCwd.slice(root.length));
+  return sessionCwd.startsWith(root) && inside ? worktreePath : sessionCwd;
+};
+
 const isLiveProviderSession = (
   session: OrchestrationV2ThreadProjection["providerSessions"][number],
 ) => session.status !== "stopped" && session.status !== "error";
@@ -131,8 +143,7 @@ export const layer: Layer.Layer<
                           runtimeMode: projection.thread.runtimeMode,
                           interactionMode: projection.thread.interactionMode,
                           workspace:
-                            currentSession?.cwd ??
-                            projection.thread.worktreePath ??
+                            sessionWorkspace(currentSession?.cwd, projection.thread.worktreePath) ??
                             "<unresolved-workspace>",
                         },
                   target: {

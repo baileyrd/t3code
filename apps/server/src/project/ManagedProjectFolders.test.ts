@@ -41,6 +41,7 @@ const layerGitWorkflow = (vcsProcess?: Layer.Layer<VcsProcess.VcsProcess>) =>
 const layerEnrichment = ProjectEnrichmentService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: () => Effect.succeed(null),
       }),

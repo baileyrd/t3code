@@ -744,7 +744,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
     ),
   ),
   Layer.provideMerge(layerWorkspace),
-  Layer.provideMerge(ProjectEnrichmentService.layer),
+  Layer.provideMerge(ProjectEnrichmentService.layer.pipe(Layer.provide(layerVcsDriverRegistry))),
   Layer.provideMerge(Layer.mergeAll(NativeAppIconResolver.layer, layerProjectFaviconResolver)),
   Layer.provideMerge(layerRepositoryIdentityResolver),
   Layer.provideMerge(CodexManagedTokenBroker.layer),

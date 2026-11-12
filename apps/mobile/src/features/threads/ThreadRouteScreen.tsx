@@ -767,7 +767,7 @@ function ThreadRouteContent(
     const cwd = projectScriptCwd({
       project: {
         cwd: selectedThreadProject.workspaceRoot,
-        repositoryRoot: selectedThreadProject.repositoryIdentity?.rootPath,
+        repositorySubdirectory: selectedThreadProject.repositorySubdirectory,
       },
       worktreePath: preferredWorktreePath,
     });

@@ -1516,7 +1516,7 @@ function OpenCommandPaletteDialog(props: {
             cwd: projectScriptCwd({
               project: {
                 cwd: project.workspaceRoot,
-                repositoryRoot: project.repositoryIdentity?.rootPath,
+                repositorySubdirectory: project.repositorySubdirectory,
               },
               worktreePath: thread.worktreePath,
             }),

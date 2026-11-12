@@ -1,3 +1,4 @@
+import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
@@ -61,11 +62,13 @@ function failureToast(title: string, error: unknown) {
 export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
+  readonly projectSubdirectory?: string | null;
   readonly onStartRename: () => void;
   readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly canShareWithGuest: boolean;
 }) {
-  const { threadRef, projectCwd, onStartRename, onFind, canShareWithGuest } = input;
+  const { threadRef, projectCwd, projectSubdirectory, onStartRename, onFind, canShareWithGuest } =
+    input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -279,7 +282,13 @@ export function useThreadActionMenu(input: {
           return;
         }
         case "copy-path": {
-          const workspacePath = thread.worktreePath ?? projectCwd;
+          const workspacePath =
+            projectCwd === null
+              ? thread.worktreePath
+              : projectScriptCwd({
+                  project: { cwd: projectCwd, repositorySubdirectory: projectSubdirectory },
+                  worktreePath: thread.worktreePath,
+                });
           if (!workspacePath) {
             toastManager.add(
               stackedThreadToast({

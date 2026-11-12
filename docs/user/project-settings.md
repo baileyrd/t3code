@@ -201,6 +201,14 @@ such as another drive, set **Settings → Worktrees → Worktree location** to a
 `D:\worktrees` or `~/worktrees`. The setting is per machine. Existing worktrees stay where they
 are, and cleanup covers both the default folder and the custom one.
 
+## Projects inside a larger repository
+
+A project can be a folder inside a repository, such as one package of a monorepo. Worktree threads
+of that project check out the whole repository, then run the agent, setup and settle scripts, and
+terminals in the same folder inside the worktree. A script that needs the repository root can
+`cd "$T3CODE_WORKTREE_PATH"`. If the folder doesn't exist on the thread's branch, the turn fails
+instead of starting at the repository root.
+
 ## Fast worktree checkout on macOS
 
 Fast worktree checkout is a beta. Turn it on for each Mac in **Settings → Labs → Fast worktree
