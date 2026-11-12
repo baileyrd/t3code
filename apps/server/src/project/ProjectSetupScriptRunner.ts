@@ -128,7 +128,6 @@ export const ProjectSetupScriptRunnerError = Schema.Union([
   ProjectSetupScriptUnsupportedShellError,
   ThreadWorkspaceFolderMissingError,
   ThreadWorkspaceRepositoryUnreadableError,
-  ThreadWorkspaceRepositoryUnreadableError,
 ]);
 export type ProjectSetupScriptRunnerError = typeof ProjectSetupScriptRunnerError.Type;
 
