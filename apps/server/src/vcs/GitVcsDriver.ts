@@ -45,6 +45,7 @@ import {
 import * as CheckoutCloner from "./CheckoutCloner.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import type { SparseCheckoutPaths } from "./sparseCheckoutPatterns.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -146,6 +147,8 @@ export interface CreateWorktreeOptions {
   readonly worktreesDirectory?: string;
   /** Clone the checkout from the macOS worktree checkout cache. */
   readonly fastCheckout?: boolean;
+  /** Check out only these paths; null or omitted checks out everything. */
+  readonly sparsePaths?: SparseCheckoutPaths | null;
 }
 
 export interface GitCommitProgress {

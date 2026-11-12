@@ -809,6 +809,60 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     ).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("checks out only the sparse paths, the root's files and their parents' files", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const repository = NodeFS.realpathSync.native(yield* makeTmpDir());
+      const { initialBranch } = yield* initRepoWithCommit(repository);
+      for (const file of [
+        ".cargo/config.toml",
+        "crates/AGENTS.md",
+        "crates/a/Cargo.toml",
+        "crates/a/src/lib.rs",
+        "crates/b/Cargo.toml",
+        "crates/b/src/lib.rs",
+        "docs/guide.md",
+      ]) {
+        yield* writeTextFile(repository, file, file);
+      }
+      yield* git(repository, ["add", "."]);
+      yield* git(repository, ["commit", "-m", "crates"]);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "sparse");
+      yield* driver.createWorktree(
+        {
+          cwd: path.join(repository, "crates", "a"),
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/sparse",
+        },
+        {
+          sparsePaths: {
+            directories: [path.join(repository, "crates", "a"), "/elsewhere/crate"],
+            files: [path.join(repository, "crates", "b", "Cargo.toml")],
+          },
+        },
+      );
+      const present = (file: string) => fs.exists(path.join(worktreePath, file));
+      for (const file of [
+        "README.md",
+        ".cargo/config.toml",
+        "crates/AGENTS.md",
+        "crates/a/src/lib.rs",
+        "crates/b/Cargo.toml",
+      ]) {
+        assert.isTrue(yield* present(file), file);
+      }
+      for (const file of ["crates/b/src/lib.rs", "docs/guide.md"]) {
+        assert.isFalse(yield* present(file), file);
+      }
+      assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "preserves a trailing carriage return in the repository root after creation through an alias",
   () =>

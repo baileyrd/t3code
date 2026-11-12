@@ -90,6 +90,8 @@ import { isNonRepositoryGitStderr } from "../vcs/GitVcsDriverCore.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { makeCargoSparsePathReader } from "../workspace/cargoSparsePaths.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
 
 export interface GitActionProgressReporter {
@@ -671,6 +673,7 @@ export const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const processRunner = yield* ProcessRunner.ProcessRunner;
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const changeRequestTermsFor = Effect.fn("GitManager.changeRequestTermsFor")(function* (
@@ -773,20 +776,31 @@ export const make = Effect.gen(function* () {
     Stream.runForEach(() => gitCore.clearWorktreeCheckoutCache),
     Effect.forkScoped,
   );
+  const readCargoSparsePaths = makeCargoSparsePathReader({ processRunner, fileSystem, path });
+  /** The project's submodule mode, and its sparse paths when it opted into sparse worktrees. */
+  const readProjectWorktreeOptions = Effect.fn("GitManager.readProjectWorktreeOptions")(function* (
+    input: Parameters<typeof projectSettingsFor>[0],
+  ) {
+    const settings = yield* projectSettingsFor(input).pipe(
+      Effect.map(({ settings }) => settings),
+      Effect.orElseSucceed(() => null),
+    );
+    return {
+      submodules: settings?.worktreeSubmodules ?? null,
+      // Unreadable crates fall back to a full checkout.
+      sparsePaths:
+        settings?.sparseWorktrees === true ? yield* readCargoSparsePaths(input.cwd) : null,
+    };
+  });
   const createWorktree: GitManager["Service"]["createWorktree"] = Effect.fn(
     "GitManager.createWorktree",
   )(function* (input, options) {
-    const submodules =
-      options?.submodules !== undefined
-        ? options.submodules
-        : yield* projectSettingsFor(input).pipe(
-            Effect.map(({ settings }) => settings.worktreeSubmodules),
-            Effect.orElseSucceed(() => null),
-          );
+    const project = yield* readProjectWorktreeOptions(input);
     const result = yield* gitCore.createWorktree(input, {
       ...(yield* readWorktreeCreationSettings),
+      sparsePaths: project.sparsePaths,
       ...options,
-      submodules,
+      submodules: options?.submodules !== undefined ? options.submodules : project.submodules,
     });
     if (input.newRefName && input.baseRefName) {
       yield* shareBranchBase(input.cwd, input.newRefName);
@@ -3143,10 +3157,7 @@ export const make = Effect.gen(function* () {
         },
         {
           ...(yield* readWorktreeCreationSettings),
-          submodules: yield* projectSettingsFor(input).pipe(
-            Effect.map(({ settings }) => settings.worktreeSubmodules),
-            Effect.orElseSucceed(() => null),
-          ),
+          ...(yield* readProjectWorktreeOptions(input)),
         },
       );
       yield* ensureExistingWorktreeUpstream(worktree.worktree.path);

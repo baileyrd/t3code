@@ -82,6 +82,12 @@ describe("workspaceCrateNoteText", () => {
   it.each([null, { crate: "rustils", dependencies: [] }])("stays silent for %o", (result) => {
     expect(workspaceCrateNoteText(result)).toBe("");
   });
+
+  it("still names a sparse worktree's crate when it has no workspace dependencies", () => {
+    expect(workspaceCrateNoteText({ crate: "rustils", dependencies: [] }, true)).toBe(
+      "This folder is the `rustils` crate of a Cargo workspace. This worktree is a sparse checkout of only those crates; run `git sparse-checkout add <folder>` before working in another.",
+    );
+  });
 });
 
 const notFound = (file: string) =>
@@ -118,6 +124,7 @@ const makeReader = (input: {
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
   /** `"missing"` when rustup is not installed. */
   readonly rustupDefault?: ProcessRunner.ProcessRunOutput | "missing";
+  readonly sparse?: boolean;
 }) => {
   const files = input.files ?? workspaceFiles;
   const runs: ProcessRunner.ProcessRunInput[] = [];
@@ -134,6 +141,13 @@ const makeReader = (input: {
   const processRunner = {
     run: (runInput: ProcessRunner.ProcessRunInput) =>
       Effect.suspend(() => {
+        if (runInput.command === "git") {
+          return Effect.succeed(
+            input.sparse === true
+              ? output({ stdout: "true\n" })
+              : output({ code: ChildProcessSpawner.ExitCode(1) }),
+          );
+        }
         if (runInput.command !== "rustup") {
           runs.push(runInput);
           return Effect.succeed(outputs.shift() ?? output({ stdout: JSON.stringify(metadata) }));
@@ -182,6 +196,16 @@ describe("makeWorkspaceCrateNoteReader", () => {
       }).pipe(Effect.provide(Path.layer)),
   );
 
+  effectIt.effect("tells the agent how to widen a sparse worktree", () =>
+    Effect.gen(function* () {
+      const { read } = yield* makeReader({ sparse: true });
+      assert.equal(
+        yield* read("/repo/crates/mill"),
+        `${millNote} This worktree is a sparse checkout of only those crates; run \`git sparse-checkout add <folder>\` before working in another.`,
+      );
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
   effectIt.effect("runs cargo once for worktrees with the same manifests", () =>
     Effect.gen(function* () {
       const copy = Object.fromEntries(
@@ -209,16 +233,17 @@ describe("makeWorkspaceCrateNoteReader", () => {
   );
 
   effectIt.effect.each([
-    ["a failing cargo", output({ code: ChildProcessSpawner.ExitCode(101) })],
-    ["a timeout", output({ timedOut: true, code: null })],
-    ["output that is not metadata", output({ stdout: "{" })],
-  ] as const)("stays silent on %s and tries again next time", ([, failure]) =>
+    // A failed cargo also re-reads the default, in case it was switched or uninstalled.
+    ["a failing cargo", output({ code: ChildProcessSpawner.ExitCode(101) }), 2],
+    ["a timeout", output({ timedOut: true, code: null }), 2],
+    ["output that is not metadata", output({ stdout: "{" }), 1],
+  ] as const)("stays silent on %s and tries again next time", ([, failure, rustupReads]) =>
     Effect.gen(function* () {
       const { read, runs, rustupRuns } = yield* makeReader({ outputs: [failure] });
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
-      assert.equal(rustupRuns.length, 2);
+      assert.equal(rustupRuns.length, rustupReads);
     }).pipe(Effect.provide(Path.layer)),
   );
 
