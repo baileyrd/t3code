@@ -1238,7 +1238,10 @@ export default function ChatView(props: ChatViewProps) {
     ?.environmentId;
   const gitCwd = activeProject
     ? projectScriptCwd({
-        project: { cwd: activeProject.workspaceRoot },
+        project: {
+          cwd: activeProject.workspaceRoot,
+          repositoryRoot: activeProject.repositoryIdentity?.rootPath,
+        },
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
@@ -2668,7 +2671,10 @@ export default function ChatView(props: ChatViewProps) {
       !terminalUiState.terminalOpen ||
       (activeProjectCwd !== null &&
         projectScriptCwd({
-          project: { cwd: activeProjectCwd },
+          project: {
+            cwd: activeProjectCwd,
+            repositoryRoot: activeProject?.repositoryIdentity?.rootPath,
+          },
           worktreePath: activeThreadWorktreePath,
         }) === terminalUiLaunchContext.cwd &&
         (activeThreadWorktreePath ?? null) === terminalUiLaunchContext.worktreePath))

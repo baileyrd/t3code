@@ -36,6 +36,7 @@ import { expect, vi } from "vite-plus/test";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as TerminalManager from "./Manager.ts";
@@ -1601,6 +1602,9 @@ it.layer(
                 getThreadShell: () => Effect.succeed(null),
               }),
               ServerSettings.layerTest(),
+              Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+                detect: () => Effect.succeed(null),
+              }),
               Layer.succeed(HostProcess.Platform, "linux"),
               Layer.succeed(HostProcess.Environment, env),
             ),
@@ -1750,6 +1754,7 @@ it.layer(
               getThreadShell: () => Effect.succeed(null),
             }),
             ServerSettings.layerTest(),
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
           ),
         ),
       );

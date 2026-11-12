@@ -12,6 +12,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -19,6 +20,8 @@ import * as Schema from "effect/Schema";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { resolveThreadWorkspaceCwd } from "../workspace/threadWorkspaceCwd.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 export interface ProjectSetupScriptRunnerResultNoScript {
@@ -200,6 +203,10 @@ export const make = Effect.gen(function* () {
   const terminalManager = yield* TerminalManager.TerminalManager;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const random = yield* SecureRandom.SecureRandom;
+  const workspace = {
+    vcs: yield* VcsDriverRegistry.VcsDriverRegistry,
+    fileSystem: yield* FileSystem.FileSystem,
+  };
   const serviceScope = yield* Effect.scope;
 
   const observeTerminalCompletion = Effect.fn("ProjectSetupScriptRunner.observeTerminalCompletion")(
@@ -432,7 +439,10 @@ export const make = Effect.gen(function* () {
       trigger === "settle"
         ? `settle-${script.id}-${(yield* random.uuidV4()).slice(0, 8)}`
         : `setup-${script.id}`;
-    const cwd = input.worktreePath;
+    const cwd = yield* resolveThreadWorkspaceCwd(workspace, {
+      workspaceRoot: project.workspaceRoot,
+      worktreePath: input.worktreePath,
+    });
     const env = {
       ...projectScriptRuntimeEnv({
         project: { cwd: project.workspaceRoot },

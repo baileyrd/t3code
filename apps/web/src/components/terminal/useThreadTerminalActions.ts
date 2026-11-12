@@ -74,7 +74,10 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
     project
       ? {
           cwd: projectScriptCwd({
-            project: { cwd: project.workspaceRoot },
+            project: {
+              cwd: project.workspaceRoot,
+              repositoryRoot: project.repositoryIdentity?.rootPath,
+            },
             worktreePath: threadWorktreePath,
           }),
           worktreePath: threadWorktreePath,

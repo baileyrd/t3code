@@ -80,8 +80,9 @@ const layerVcsDriverRegistryTest = VcsDriverRegistry.layer.pipe(
   Layer.provide(layerPlatformTest),
 );
 
+// The runtime resolves worktree working folders through the same registry.
 const layerCheckpointStoreTest = CheckpointStore.layer.pipe(
-  Layer.provide(layerVcsDriverRegistryTest),
+  Layer.provideMerge(layerVcsDriverRegistryTest),
 );
 
 const driver = ProviderDriverKind.make("codex");

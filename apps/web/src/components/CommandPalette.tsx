@@ -161,6 +161,7 @@ import {
   resolveProjectPathForDispatch,
 } from "@t3tools/client-runtime/state/projects";
 import { resolvePastedPath } from "@t3tools/shared/path";
+import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import {
   dispatchCommandPalette,
   getCommandPaletteReturnFocus,
@@ -1512,7 +1513,13 @@ function OpenCommandPaletteDialog(props: {
           environmentId,
           input: {
             instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
+            cwd: projectScriptCwd({
+              project: {
+                cwd: project.workspaceRoot,
+                repositoryRoot: project.repositoryIdentity?.rootPath,
+              },
+              worktreePath: thread.worktreePath,
+            }),
             fresh: true,
           },
         });

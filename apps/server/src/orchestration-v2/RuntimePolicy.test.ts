@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
@@ -20,6 +21,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import type { VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -78,9 +81,32 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
     },
   }) as ProviderInstance;
 
-const layerWithPolicy = (policy?: ManagedPolicySummary) =>
+const layerWithPolicy = (
+  policy?: ManagedPolicySummary,
+  workspace: {
+    readonly workspaceRoot: string;
+    readonly repositoryRoot: string | null;
+    readonly existingPaths: ReadonlyArray<string>;
+  } = { workspaceRoot: "/project-root", repositoryRoot: null, existingPaths: [] },
+) =>
   RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(ServerSettings.layerTest({}, policy)),
+    Layer.provide(
+      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+        detect: () =>
+          Effect.succeed(
+            workspace.repositoryRoot === null
+              ? null
+              : ({ repository: { rootPath: workspace.repositoryRoot } } as VcsDriverHandle),
+          ),
+      }),
+    ),
+    Layer.provide(
+      FileSystem.layerNoop({
+        realPath: (path) => Effect.succeed(path),
+        exists: (path) => Effect.succeed(workspace.existingPaths.includes(path)),
+      }),
+    ),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -96,7 +122,7 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
           Effect.succeedSome({
             projectId,
             title: "Project",
-            workspaceRoot: "/project-root",
+            workspaceRoot: workspace.workspaceRoot,
             defaultModelSelection: null,
             defaultThreadEnvMode: null,
             autoPull: false,
@@ -184,6 +210,30 @@ it.layer(
       const allowed = yield* resolve("auto-accept-edits");
       assert.equal(allowed.runtimeMode, "auto-accept-edits");
       assert.equal(allowed.maxRuntimeMode, "auto-accept-edits");
+    }),
+  );
+});
+
+it.layer(
+  layerWithPolicy(undefined, {
+    workspaceRoot: "/repo/crates/mill",
+    repositoryRoot: "/repo",
+    existingPaths: ["/worktrees/feature/crates/mill"],
+  }),
+)("RuntimePolicyV2 for a project below its repository root", (it) => {
+  it.effect.each([
+    ["a local thread", null, "/repo/crates/mill"],
+    ["a worktree thread", "/worktrees/feature", "/worktrees/feature/crates/mill"],
+    ["a worktree without the folder", "/worktrees/old", "/worktrees/old"],
+  ] as const)("runs %s in the project folder", ([, worktreePath, expected]) =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now, worktreePath }),
+        modelSelection,
+      });
+      assert.equal(resolved.cwd, expected);
     }),
   );
 });

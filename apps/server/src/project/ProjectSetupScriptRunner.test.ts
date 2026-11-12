@@ -9,11 +9,14 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import { TestClock } from "effect/testing";
 
 import * as ServerSettings from "../serverSettings.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import type { VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -41,16 +44,24 @@ const makeHarness = Effect.fn(function* (options: {
   readonly history?: string;
   readonly opening?: Deferred.Deferred<void>;
   readonly shell?: string | null;
+  readonly workspaceRoot?: string;
+  readonly repositoryRoot?: string;
+  readonly existingPaths?: ReadonlyArray<string>;
 }) {
+  const openedCwds: Array<string | undefined> = [];
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const writes = yield* Queue.unbounded<string>();
   const outputLines = yield* Queue.unbounded<string>();
   const terminals = Layer.mock(TerminalManager.TerminalManager)({
-    open: () =>
-      (options.opening
-        ? Deferred.succeed(options.opening, undefined).pipe(Effect.andThen(Effect.never))
-        : Effect.void
-      ).pipe(Effect.as(openSnapshot(options.history ?? ""))),
+    open: (input) =>
+      Effect.sync(() => openedCwds.push(input.cwd)).pipe(
+        Effect.andThen(
+          options.opening
+            ? Deferred.succeed(options.opening, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+        ),
+        Effect.as(openSnapshot(options.history ?? "")),
+      ),
     getShell: () =>
       options.shell === null
         ? Effect.fail(new TerminalNotRunningError({ threadId, terminalId }))
@@ -74,6 +85,18 @@ const makeHarness = Effect.fn(function* (options: {
         }),
         ServerSettings.layerTest(),
         NodeCrypto.layer,
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          detect: () =>
+            Effect.succeed(
+              options.repositoryRoot === undefined
+                ? null
+                : ({ repository: { rootPath: options.repositoryRoot } } as VcsDriverHandle),
+            ),
+        }),
+        FileSystem.layerNoop({
+          realPath: (path) => Effect.succeed(path),
+          exists: (path) => Effect.succeed(options.existingPaths?.includes(path) ?? false),
+        }),
       ),
     ),
   );
@@ -83,7 +106,7 @@ const makeHarness = Effect.fn(function* (options: {
     observeCompletion: { onOutputLine: (line) => Queue.offer(outputLines, line) },
     project: {
       id: ProjectId.make("project-1"),
-      workspaceRoot: "/repo",
+      workspaceRoot: options.workspaceRoot ?? "/repo",
       scripts: [
         {
           id: "setup",
@@ -97,13 +120,16 @@ const makeHarness = Effect.fn(function* (options: {
   });
   const emit = (terminalEvent: TerminalEvent) =>
     Effect.forEach([...listeners], (listener) => listener(terminalEvent), { discard: true });
-  return { start, listeners, writes, outputLines, emit };
+  return { start, listeners, writes, outputLines, emit, openedCwds };
 });
 
 const setup = Effect.fn(function* (
   options: {
     readonly history?: string;
     readonly shell?: string | null;
+    readonly workspaceRoot?: string;
+    readonly repositoryRoot?: string;
+    readonly existingPaths?: ReadonlyArray<string>;
   } = {},
 ) {
   const harness = yield* makeHarness(options);
@@ -114,6 +140,35 @@ const setup = Effect.fn(function* (
 });
 
 describe("ProjectSetupScriptRunner", () => {
+  it.effect.each([
+    ["a root project", "/repo", undefined, [], "/repo/.t3/worktrees/feature"],
+    [
+      "a package project",
+      "/repo/crates/mill",
+      "/repo",
+      ["/repo/.t3/worktrees/feature/crates/mill"],
+      "/repo/.t3/worktrees/feature/crates/mill",
+    ],
+    [
+      "a package missing from the worktree",
+      "/repo/crates/mill",
+      "/repo",
+      [],
+      "/repo/.t3/worktrees/feature",
+    ],
+  ] as const)(
+    "runs setup for %s in its worktree folder",
+    ([, workspaceRoot, repositoryRoot, existingPaths, expected]) =>
+      Effect.gen(function* () {
+        const { openedCwds } = yield* setup({
+          workspaceRoot,
+          ...(repositoryRoot === undefined ? {} : { repositoryRoot }),
+          existingPaths,
+        });
+        expect(openedCwds).toEqual([expected]);
+      }),
+  );
+
   it.effect("writes immediately when the spawned fallback is PowerShell", () =>
     Effect.gen(function* () {
       const { writes } = yield* setup({

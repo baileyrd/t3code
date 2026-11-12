@@ -6,6 +6,7 @@ import {
   getCloneDirectoryPath,
 } from "@t3tools/client-runtime/operations/projects";
 import { resolvePastedPath } from "@t3tools/shared/path";
+import { projectSubdirectory } from "@t3tools/shared/projectScripts";
 import {
   type EnvironmentId,
   type ProjectIgnoredFile,
@@ -400,19 +401,6 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
       </DialogPopup>
     </Dialog>
   );
-}
-
-/**
- * A project can be rooted below its repository's top folder. The clone lands
- * at the top, so copied files keep the same path below it.
- */
-function projectSubdirectory(repositoryRoot: string | undefined, workspaceRoot: string) {
-  if (!repositoryRoot) return "";
-  const prefix = repositoryRoot.replace(/[\\/]+$/, "");
-  const rest = workspaceRoot.slice(prefix.length);
-  return workspaceRoot.startsWith(prefix) && /^[\\/]/.test(rest)
-    ? rest.slice(1).replaceAll("\\", "/")
-    : "";
 }
 
 function defaultSelection(files: readonly ProjectIgnoredFile[]): ReadonlySet<string> {
