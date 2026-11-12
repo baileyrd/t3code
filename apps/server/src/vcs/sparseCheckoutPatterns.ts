@@ -36,22 +36,27 @@ export function sparseCheckoutPatterns(
 ): ReadonlyArray<string> | null {
   const project = paths.directories[0];
   if (project === undefined || relativeTo(repoRoot, project) === null) return null;
-  const directories = paths.directories.flatMap((dir) => {
+  // Windows paths may spell one folder in several cases; git there matches without case too.
+  const fold = isWindowsPath(repoRoot)
+    ? (value: string) => value.toLowerCase()
+    : (value: string) => value;
+  const byKey = new Map<string, string>();
+  for (const dir of paths.directories) {
     const relative = relativeTo(repoRoot, dir);
-    return relative === null ? [] : [relative];
-  });
+    if (relative !== null && !byKey.has(fold(relative))) byKey.set(fold(relative), relative);
+  }
+  const directories = [...byKey.values()];
   // A folder held whole is no ancestor: its `!dir/*/` would cut out its own subfolders.
-  const whole = new Set(directories);
-  const ancestors = new Set<string>();
+  const ancestors = new Map<string, string>();
   for (const dir of directories) {
     const segments = dir.split("/");
     for (let depth = 1; depth < segments.length; depth++) {
       const ancestor = segments.slice(0, depth).join("/");
-      if (whole.has(ancestor)) break;
-      ancestors.add(ancestor);
+      if (byKey.has(fold(ancestor))) break;
+      if (!ancestors.has(fold(ancestor))) ancestors.set(fold(ancestor), ancestor);
     }
   }
-  const byDepth = [...ancestors].sort(
+  const byDepth = [...ancestors.values()].sort(
     (left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right),
   );
   const files = paths.files.flatMap((file) => {
