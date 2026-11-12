@@ -809,46 +809,73 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     ).pipe(Effect.provide(layerTest)),
 );
 
+/** A repository with two crates, worktree-created from `crates/a` with `sparse` built from it. */
+const createSparseWorktree = (
+  sparse: (repository: string) => {
+    readonly paths: { readonly directories: string[]; readonly files: string[] };
+    readonly opens: boolean;
+  },
+) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const repository = NodeFS.realpathSync.native(yield* makeTmpDir());
+    const { initialBranch } = yield* initRepoWithCommit(repository);
+    for (const file of [
+      ".cargo/config.toml",
+      "crates/.cargo/config.toml",
+      "crates/AGENTS.md",
+      "crates/a/Cargo.toml",
+      "crates/a/src/lib.rs",
+      "crates/b/Cargo.toml",
+      "crates/b/src/lib.rs",
+      "docs/guide.md",
+    ]) {
+      yield* writeTextFile(repository, file, file);
+    }
+    yield* git(repository, ["add", "."]);
+    yield* git(repository, ["commit", "-m", "crates"]);
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "sparse");
+    const verified: string[] = [];
+    const { paths, opens } = sparse(repository);
+    yield* driver.createWorktree(
+      {
+        cwd: path.join(repository, "crates", "a"),
+        path: worktreePath,
+        refName: initialBranch,
+        newRefName: "feature/sparse",
+      },
+      {
+        sparse: {
+          paths,
+          verify: (projectCwd) =>
+            Effect.sync(() => verified.push(projectCwd)).pipe(Effect.as(opens)),
+        },
+      },
+    );
+    const present = (file: string) => fs.exists(path.join(worktreePath, file));
+    assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+    return { present, verified, worktreePath, path };
+  });
+
 it.effect("checks out only the sparse paths, the root's files and their parents' files", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const fs = yield* FileSystem.FileSystem;
-      const repository = NodeFS.realpathSync.native(yield* makeTmpDir());
-      const { initialBranch } = yield* initRepoWithCommit(repository);
-      for (const file of [
-        ".cargo/config.toml",
-        "crates/AGENTS.md",
-        "crates/a/Cargo.toml",
-        "crates/a/src/lib.rs",
-        "crates/b/Cargo.toml",
-        "crates/b/src/lib.rs",
-        "docs/guide.md",
-      ]) {
-        yield* writeTextFile(repository, file, file);
-      }
-      yield* git(repository, ["add", "."]);
-      yield* git(repository, ["commit", "-m", "crates"]);
-      const driver = yield* GitVcsDriver.GitVcsDriver;
-      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "sparse");
-      yield* driver.createWorktree(
-        {
-          cwd: path.join(repository, "crates", "a"),
-          path: worktreePath,
-          refName: initialBranch,
-          newRefName: "feature/sparse",
-        },
-        {
-          sparsePaths: {
-            directories: [path.join(repository, "crates", "a"), "/elsewhere/crate"],
-            files: [path.join(repository, "crates", "b", "Cargo.toml")],
+      const { present, verified, worktreePath, path } = yield* createSparseWorktree(
+        (repository) => ({
+          paths: {
+            directories: [`${repository}/crates/a`, "/elsewhere/crate"],
+            files: [`${repository}/crates/b/Cargo.toml`],
           },
-        },
+          opens: true,
+        }),
       );
-      const present = (file: string) => fs.exists(path.join(worktreePath, file));
+      assert.deepEqual(verified, [path.join(worktreePath, "crates", "a")]);
       for (const file of [
         "README.md",
         ".cargo/config.toml",
+        "crates/.cargo/config.toml",
         "crates/AGENTS.md",
         "crates/a/src/lib.rs",
         "crates/b/Cargo.toml",
@@ -858,7 +885,23 @@ it.effect("checks out only the sparse paths, the root's files and their parents'
       for (const file of ["crates/b/src/lib.rs", "docs/guide.md"]) {
         assert.isFalse(yield* present(file), file);
       }
-      assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([
+  ["the project can't open its sparse worktree", (repository: string) => repository, false],
+  ["the project's folder is spelled outside the repository", () => "/elsewhere", true],
+] as const)("checks out the whole worktree when %s", ([, root, opens]) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { present } = yield* createSparseWorktree((repository) => ({
+        paths: { directories: [`${root(repository)}/crates/a`], files: [] },
+        opens,
+      }));
+      for (const file of ["crates/b/src/lib.rs", "docs/guide.md"]) {
+        assert.isTrue(yield* present(file), file);
+      }
     }),
   ).pipe(Effect.provide(layerTest)),
 );

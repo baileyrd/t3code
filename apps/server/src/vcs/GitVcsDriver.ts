@@ -140,6 +140,12 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface SparseCheckout {
+  readonly paths: SparseCheckoutPaths;
+  /** Whether the project's folder in the sparse worktree works; false checks out everything. */
+  readonly verify: (projectCwd: string) => Effect.Effect<boolean>;
+}
+
 export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
@@ -148,7 +154,7 @@ export interface CreateWorktreeOptions {
   /** Clone the checkout from the macOS worktree checkout cache. */
   readonly fastCheckout?: boolean;
   /** Check out only these paths; null or omitted checks out everything. */
-  readonly sparsePaths?: SparseCheckoutPaths | null;
+  readonly sparse?: SparseCheckout | null;
 }
 
 export interface GitCommitProgress {

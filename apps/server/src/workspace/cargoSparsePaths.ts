@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Hash from "effect/Hash";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -45,10 +46,9 @@ const sameDir = (left: string, right: string) => {
 const manifestDir = (manifestPath: string) => manifestPath.replace(/[\\/][^\\/]+$/, "");
 
 /**
- * The crate rooted at `crateDir` and every local crate it builds against, as folders, plus every
- * local package's manifest and target files: cargo loads each member, `[patch]` and path
- * dependency to resolve the workspace, even ones this crate never builds.
- * Dev-dependencies count for the crate itself only. Null when no local crate lives at `crateDir`.
+ * The crate at `crateDir` (first) and the local crates it builds against, dev-only ones for itself
+ * alone, as folders; plus every local package's manifest and targets, which cargo loads to resolve
+ * the workspace. Null when no local crate lives at `crateDir`.
  */
 export function cargoSparsePaths(
   metadata: ResolvedCargoMetadata,
@@ -87,24 +87,63 @@ interface CargoSparsePathServices {
   readonly path: Path.Path;
 }
 
-/** Reads the sparse paths for the crate at `cwd`; null when it is no crate or cargo fails. */
+const CACHE_CAPACITY = 16;
+const METADATA_ARGS = ["metadata", "--format-version", "1", "--offline", "--locked"] as const;
+
+/**
+ * `read(cwd)` gives the sparse paths for the crate at `cwd`, or null when it is no crate or cargo
+ * fails. `opens(cwd)` says whether cargo can resolve the workspace from `cwd`, to check a sparse
+ * worktree before handing it over. Both use the full graph, which follows path dependencies
+ * through `[patch]`; --locked never writes Cargo.lock.
+ */
 export function makeCargoSparsePathReader(services: CargoSparsePathServices) {
+  const { fileSystem, path } = services;
   const cargo = makePinnedCargo(services);
-  return Effect.fn("readCargoSparsePaths")(function* (cwd: string) {
-    // Cargo reports physical paths.
-    const physicalCwd = yield* services.fileSystem
-      .realPath(cwd)
-      .pipe(Effect.orElseSucceed(() => cwd));
-    const stdout = yield* cargo.run({
-      cwd: physicalCwd,
-      // The full graph follows path dependencies through `[patch]`; --locked never writes Cargo.lock.
-      args: ["metadata", "--format-version", "1", "--offline", "--locked"],
+  const cache = new Map<number, SparseCheckoutPaths>();
+  const readText = (file: string) =>
+    fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => null));
+  const runMetadata = (cwd: string) =>
+    cargo.run({
+      cwd,
+      args: METADATA_ARGS,
       timeout: "30 seconds",
       maxOutputBytes: 64 * 1024 * 1024,
     });
+
+  /** The crate's manifest and the nearest lockfile with its workspace manifest, or null. */
+  const cacheKey = Effect.fn("CargoSparsePaths.cacheKey")(function* (cwd: string) {
+    const ownManifest = yield* readText(path.join(cwd, "Cargo.toml"));
+    if (ownManifest === null) return null;
+    for (let dir = cwd; ; dir = path.dirname(dir)) {
+      const lock = yield* readText(path.join(dir, "Cargo.lock"));
+      if (lock !== null) {
+        const root = (yield* readText(path.join(dir, "Cargo.toml"))) ?? "";
+        return Hash.string([cwd, ownManifest, root, lock].join("\0"));
+      }
+      if (path.dirname(dir) === dir) return null;
+    }
+  });
+
+  const read = Effect.fn("CargoSparsePaths.read")(function* (cwd: string) {
+    // Cargo reports physical paths.
+    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    const key = yield* cacheKey(physicalCwd);
+    if (key === null) return null;
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    const stdout = yield* runMetadata(physicalCwd);
     if (stdout === null) return null;
     const metadata = decodeResolvedCargoMetadata(stdout);
     if (metadata._tag === "None") return null;
-    return cargoSparsePaths(metadata.value, physicalCwd);
+    const paths = cargoSparsePaths(metadata.value, physicalCwd);
+    if (paths === null) return null;
+    const oldest = cache.keys().next();
+    if (cache.size >= CACHE_CAPACITY && oldest.done !== true) cache.delete(oldest.value);
+    cache.set(key, paths);
+    return paths;
   });
+
+  const opens = (cwd: string) => runMetadata(cwd).pipe(Effect.map((stdout) => stdout !== null));
+
+  return { read, opens };
 }

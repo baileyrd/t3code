@@ -776,8 +776,20 @@ export const make = Effect.gen(function* () {
     Stream.runForEach(() => gitCore.clearWorktreeCheckoutCache),
     Effect.forkScoped,
   );
-  const readCargoSparsePaths = makeCargoSparsePathReader({ processRunner, fileSystem, path });
-  /** The project's submodule mode, and its sparse paths when it opted into sparse worktrees. */
+  const cargoSparsePaths = makeCargoSparsePathReader({ processRunner, fileSystem, path });
+  /** Sparse paths for a project that opted in; null, with a log line, when cargo can't say. */
+  const readSparseCheckout = Effect.fn("GitManager.readSparseCheckout")(function* (cwd: string) {
+    const paths = yield* cargoSparsePaths.read(cwd);
+    if (paths === null) {
+      yield* Effect.logWarning("sparse worktree skipped: cargo couldn't read the workspace", {
+        cwd,
+      });
+      return null;
+    }
+    // The paths come from the project's checkout; the worktree's ref may add crates.
+    return { paths, verify: cargoSparsePaths.opens };
+  });
+  /** The project's submodule mode, and its sparse checkout when it opted into sparse worktrees. */
   const readProjectWorktreeOptions = Effect.fn("GitManager.readProjectWorktreeOptions")(function* (
     input: Parameters<typeof projectSettingsFor>[0],
   ) {
@@ -787,9 +799,7 @@ export const make = Effect.gen(function* () {
     );
     return {
       submodules: settings?.worktreeSubmodules ?? null,
-      // Unreadable crates fall back to a full checkout.
-      sparsePaths:
-        settings?.sparseWorktrees === true ? yield* readCargoSparsePaths(input.cwd) : null,
+      sparse: settings?.sparseWorktrees === true ? yield* readSparseCheckout(input.cwd) : null,
     };
   });
   const createWorktree: GitManager["Service"]["createWorktree"] = Effect.fn(
@@ -798,7 +808,7 @@ export const make = Effect.gen(function* () {
     const project = yield* readProjectWorktreeOptions(input);
     const result = yield* gitCore.createWorktree(input, {
       ...(yield* readWorktreeCreationSettings),
-      sparsePaths: project.sparsePaths,
+      sparse: project.sparse,
       ...options,
       submodules: options?.submodules !== undefined ? options.submodules : project.submodules,
     });

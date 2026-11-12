@@ -1,4 +1,4 @@
-/** Absolute paths a sparse checkout must hold: whole folders, and single files. */
+/** Absolute paths a sparse checkout must hold: whole folders, the project's first, and single files. */
 export interface SparseCheckoutPaths {
   readonly directories: ReadonlyArray<string>;
   readonly files: ReadonlyArray<string>;
@@ -10,7 +10,7 @@ const slashes = (value: string) => value.replaceAll("\\", "/").replace(/\/+$/, "
 const escapePattern = (value: string) => value.replace(/[\\*?[\]]/g, "\\$&");
 
 /** `path` below `root`, `/`-separated with its own letter case; null outside it or at the root. */
-function relativeTo(root: string, path: string): string | null {
+export function relativeTo(root: string, path: string): string | null {
   const base = slashes(root);
   const target = slashes(path);
   const fold = isWindowsPath(base)
@@ -26,15 +26,16 @@ function relativeTo(root: string, path: string): string | null {
 }
 
 /**
- * Non-cone sparse-checkout patterns for `paths`, in the shape cone mode writes: every file at the
- * repository root and `.cargo/`, the files directly inside each folder's ancestors (where nested
- * agent instructions live), the folders themselves, then single files. Paths outside the
- * repository are left out, since no checkout can hold them.
+ * Cone-shaped non-cone patterns: root files, each ancestor's files and `.cargo/`, the folders, then
+ * single files. Paths outside the repository are dropped; null when the project's own folder is,
+ * since `repoRoot` and the paths then spell the root differently.
  */
 export function sparseCheckoutPatterns(
   repoRoot: string,
   paths: SparseCheckoutPaths,
-): ReadonlyArray<string> {
+): ReadonlyArray<string> | null {
+  const project = paths.directories[0];
+  if (project === undefined || relativeTo(repoRoot, project) === null) return null;
   const directories = paths.directories.flatMap((dir) => {
     const relative = relativeTo(repoRoot, dir);
     return relative === null ? [] : [relative];
@@ -58,7 +59,11 @@ export function sparseCheckoutPatterns(
       "/*",
       "!/*/",
       "/.cargo/",
-      ...byDepth.flatMap((dir) => [`/${escapePattern(dir)}/*`, `!/${escapePattern(dir)}/*/`]),
+      ...byDepth.flatMap((dir) => [
+        `/${escapePattern(dir)}/*`,
+        `!/${escapePattern(dir)}/*/`,
+        `/${escapePattern(dir)}/.cargo/`,
+      ]),
       ...directories.map((dir) => `/${escapePattern(dir)}/`),
       ...files,
     ]),

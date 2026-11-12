@@ -211,10 +211,12 @@ instead of starting at the repository root.
 
 When the project is one crate of a Cargo workspace, turn on **Settings → Worktrees → Sparse
 checkout** for that project to check out only the crate, the workspace crates it builds against,
-the files at the repository root, and the manifests Cargo needs to open the workspace. The agent is
-told the worktree is sparse; run `git sparse-checkout add <folder>` in the worktree to bring in
-another folder. The crate list comes from `cargo metadata` in the project's folder, so Cargo must
-be able to read the workspace offline there; otherwise the worktree gets a full checkout.
+the files at the repository root, and the manifests Cargo reads to resolve the workspace. Before
+the thread starts, T3 Code checks that Cargo can open the crate in the new worktree; if it can't,
+for example because the branch adds a crate, the worktree gets a full checkout instead. The agent
+is told the worktree is sparse. In the worktree, run `git sparse-checkout add <folder>` to bring in
+another folder, or `git sparse-checkout disable` to check out everything. Cargo must be able to read
+the workspace offline in the project's folder.
 
 ## Fast worktree checkout on macOS
 
