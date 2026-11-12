@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Hash from "effect/Hash";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -25,7 +26,13 @@ type CargoMetadata = typeof CargoMetadata.Type;
 
 const decodeCargoMetadata = Schema.decodeUnknownOption(Schema.fromJsonString(CargoMetadata));
 
-const trimSeparators = (value: string) => value.replace(/[\\/]+$/, "");
+// Windows paths compare by `/` and case: cargo and realPath may disagree on either.
+const comparableDir = (value: string) => {
+  const trimmed = value.replace(/[\\/]+$/, "");
+  return /^[a-zA-Z]:|^[\\/]{2}/.test(trimmed)
+    ? trimmed.replaceAll("\\", "/").toLowerCase()
+    : trimmed;
+};
 const manifestDir = (manifestPath: string) => manifestPath.replace(/[\\/][^\\/]+$/, "");
 
 /** The member crate rooted at `crateDir` and the workspace crates it depends on, skipping dev-only ones. */
@@ -33,17 +40,17 @@ export function cargoWorkspaceDependencies(
   metadata: CargoMetadata,
   crateDir: string,
 ): { readonly crate: string; readonly dependencies: ReadonlyArray<string> } | null {
-  const dir = trimSeparators(crateDir);
-  if (dir === trimSeparators(metadata.workspace_root)) return null;
+  const dir = comparableDir(crateDir);
+  if (dir === comparableDir(metadata.workspace_root)) return null;
   const crateByDir = new Map(
-    metadata.packages.map((pkg) => [trimSeparators(manifestDir(pkg.manifest_path)), pkg.name]),
+    metadata.packages.map((pkg) => [comparableDir(manifestDir(pkg.manifest_path)), pkg.name]),
   );
   const member = metadata.packages.find((pkg) => crateByDir.get(dir) === pkg.name);
   if (member === undefined) return null;
   const dependencies = new Set<string>();
   for (const dependency of member.dependencies) {
     if (dependency.kind === "dev" || dependency.path === undefined) continue;
-    const name = crateByDir.get(trimSeparators(dependency.path));
+    const name = crateByDir.get(comparableDir(dependency.path));
     if (name !== undefined) dependencies.add(name);
   }
   return { crate: member.name, dependencies: [...dependencies].sort() };
@@ -57,38 +64,93 @@ export function workspaceCrateNoteText(
   return `This folder is the \`${result.crate}\` crate of a Cargo workspace. Its workspace dependencies: ${result.dependencies.join(", ")}.`;
 }
 
+const TOOLCHAIN_FILES = ["rust-toolchain.toml", "rust-toolchain"] as const;
+const WORKSPACE_TABLE = /^\s*\[workspace\]/m;
+// A toolchain `path` makes the rustup proxy run that folder's `bin/cargo`, a binary the repository picks.
+const TOOLCHAIN_PATH = /^\s*path\s*=/m;
+const CACHE_CAPACITY = 64;
+
+interface WorkspaceCrateNoteServices {
+  readonly processRunner: ProcessRunner.ProcessRunner["Service"];
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}
+
 /**
  * Names the crate a thread works in and its workspace dependencies, so the agent knows where
  * to look outside its folder without running `cargo tree`. Any failure yields "".
+ *
+ * Notes are cached by the manifests' contents, so worktrees of one commit run cargo once.
  */
-export const readWorkspaceCrateNote = Effect.fn("readWorkspaceCrateNote")(function* (
-  services: {
-    readonly processRunner: ProcessRunner.ProcessRunner["Service"];
-    readonly fileSystem: FileSystem.FileSystem;
-    readonly path: Path.Path;
-  },
-  cwd: string,
-) {
-  const hasManifest = yield* services.fileSystem
-    .exists(services.path.join(cwd, "Cargo.toml"))
-    .pipe(Effect.orElseSucceed(() => false));
-  if (!hasManifest) return "";
-  const output = yield* services.processRunner
-    .run({
-      command: "cargo",
-      args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
-      cwd,
-      timeout: "5 seconds",
-      timeoutBehavior: "timedOutResult",
-      maxOutputBytes: 8 * 1024 * 1024,
-    })
-    .pipe(Effect.option);
-  if (output._tag === "None" || output.value.code !== 0 || output.value.timedOut) return "";
-  const metadata = decodeCargoMetadata(output.value.stdout);
-  if (metadata._tag === "None") return "";
-  // Cargo reports physical paths.
-  const physicalCwd = yield* services.fileSystem
-    .realPath(cwd)
-    .pipe(Effect.orElseSucceed(() => cwd));
-  return workspaceCrateNoteText(cargoWorkspaceDependencies(metadata.value, physicalCwd));
-});
+export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteServices) {
+  const { fileSystem, path } = services;
+  const notes = new Map<number, string>();
+  const readText = (file: string) =>
+    fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => null));
+
+  /** The nearest workspace manifest above `cwd`, or null when rustup would run a repository binary. */
+  const findWorkspace = Effect.fn("WorkspaceCrateNote.findWorkspace")(function* (cwd: string) {
+    let workspaceRoot: string | null = null;
+    let toolchainChecked = false;
+    for (let dir = cwd; ; dir = path.dirname(dir)) {
+      for (const name of toolchainChecked ? [] : TOOLCHAIN_FILES) {
+        const toolchain = yield* readText(path.join(dir, name));
+        if (toolchain === null) continue;
+        if (TOOLCHAIN_PATH.test(toolchain)) return null;
+        toolchainChecked = true;
+        break;
+      }
+      if (workspaceRoot === null) {
+        const manifest = yield* readText(path.join(dir, "Cargo.toml"));
+        if (manifest !== null && WORKSPACE_TABLE.test(manifest)) workspaceRoot = dir;
+      }
+      if ((workspaceRoot !== null && toolchainChecked) || path.dirname(dir) === dir) break;
+    }
+    return workspaceRoot;
+  });
+
+  const runCargo = Effect.fn("WorkspaceCrateNote.runCargo")(function* (cwd: string) {
+    const output = yield* services.processRunner
+      .run({
+        command: "cargo",
+        args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
+        cwd,
+        // A missing pinned toolchain would otherwise download on every new thread.
+        env: { RUSTUP_AUTO_INSTALL: "0" },
+        timeout: "5 seconds",
+        timeoutBehavior: "timedOutResult",
+        maxOutputBytes: 8 * 1024 * 1024,
+      })
+      .pipe(Effect.option);
+    if (output._tag === "None" || output.value.code !== 0 || output.value.timedOut) return null;
+    const metadata = decodeCargoMetadata(output.value.stdout);
+    if (metadata._tag === "None") return null;
+    return workspaceCrateNoteText(cargoWorkspaceDependencies(metadata.value, cwd));
+  });
+
+  return Effect.fn("readWorkspaceCrateNote")(function* (cwd: string) {
+    // Cargo reports physical paths.
+    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    const ownManifest = yield* readText(path.join(physicalCwd, "Cargo.toml"));
+    if (ownManifest === null) return "";
+    const workspaceRoot = yield* findWorkspace(physicalCwd);
+    if (workspaceRoot === null || workspaceRoot === physicalCwd) return "";
+    const key = Hash.string(
+      [
+        path.relative(workspaceRoot, physicalCwd),
+        ownManifest,
+        (yield* readText(path.join(workspaceRoot, "Cargo.toml"))) ?? "",
+        (yield* readText(path.join(workspaceRoot, "Cargo.lock"))) ?? "",
+      ].join("\0"),
+    );
+    const cached = notes.get(key);
+    if (cached !== undefined) return cached;
+    const note = yield* runCargo(physicalCwd);
+    // Failures stay uncached so a slow or locked cargo gets another try on the next thread.
+    if (note === null) return "";
+    const oldest = notes.keys().next();
+    if (notes.size >= CACHE_CAPACITY && oldest.done !== true) notes.delete(oldest.value);
+    notes.set(key, note);
+    return note;
+  });
+}
