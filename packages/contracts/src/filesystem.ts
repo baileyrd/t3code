@@ -57,10 +57,15 @@ export const FilesystemWorkspacePackage = Schema.Struct({
 });
 export type FilesystemWorkspacePackage = typeof FilesystemWorkspacePackage.Type;
 
-// Empty when the folder is not a workspace root or its manifest cannot be read.
-export const FilesystemWorkspacePackagesResult = Schema.Struct({
-  packages: Schema.Array(FilesystemWorkspacePackage),
-});
+export const FilesystemWorkspacePackagesResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ok"),
+    packages: Schema.Array(FilesystemWorkspacePackage),
+  }),
+  Schema.Struct({ status: Schema.Literal("not-workspace") }),
+  // A workspace whose packages could not be listed: cargo missing, failing, or too slow.
+  Schema.Struct({ status: Schema.Literal("failed"), reason: TrimmedNonEmptyString }),
+]);
 export type FilesystemWorkspacePackagesResult = typeof FilesystemWorkspacePackagesResult.Type;
 
 export const FilesystemBrowseFailure = Schema.Literals([

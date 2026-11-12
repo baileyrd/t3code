@@ -62,8 +62,8 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import * as ProcessRunner from "../processRunner.ts";
 import { makeWorkspaceCrateNoteReader } from "../workspace/workspaceCrateNote.ts";
+import * as CargoMetadata from "../workspace/cargoMetadata.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
   isRestartNoteContinuation,
@@ -171,7 +171,7 @@ export const layer: Layer.Layer<
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
-  | ProcessRunner.ProcessRunner
+  | CargoMetadata.CargoMetadataReader
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -191,7 +191,7 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const readWorkspaceCrateNote = makeWorkspaceCrateNoteReader({
-      processRunner: yield* ProcessRunner.ProcessRunner,
+      cargo: yield* CargoMetadata.CargoMetadataReader,
       fileSystem,
       path,
     });

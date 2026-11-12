@@ -35,7 +35,6 @@ import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
   filterFilesystemBrowseEntries,
-  filterWorkspacePackages,
   getFilesystemBrowsePath,
   getFilesystemBrowseTabCompletion,
 } from "@t3tools/client-runtime/state/filesystem";
@@ -2323,12 +2322,12 @@ function OpenCommandPaletteDialog(props: {
     browseTo,
   });
   const workspacePackageGroups = buildWorkspacePackageGroups({
-    packages: filterWorkspacePackages(
-      workspacePackagesQuery.data?.packages ?? [],
-      browsePath.filterQuery,
-    ),
+    result: workspacePackagesQuery.data,
+    filterQuery: browsePath.filterQuery,
     icon: <PackageIcon className={ITEM_ICON_CLASS} />,
+    retryIcon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
     addPackage: handleAddProject,
+    retry: workspacePackagesQuery.refresh,
   });
   const cloneDestinationBrowseGroups = browseGroups.map((group) =>
     group.value === "directories" ? { ...group, label: "Select where to clone" } : group,

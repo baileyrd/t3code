@@ -1,10 +1,11 @@
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
 
 import {
   type CargoMetadata,
-  type CargoMetadataServices,
+  type CargoMetadataReader,
   comparableDir,
-  makeCargoMetadataReader,
   manifestDir,
 } from "./cargoMetadata.ts";
 
@@ -39,11 +40,15 @@ export function workspaceCrateNoteText(
 
 /**
  * Names the crate a thread works in and its workspace dependencies, so the agent knows where
- * to look outside its folder without running `cargo tree`. Any failure yields "".
+ * to look outside its folder without running `cargo tree`. Any failure yields "": the note sits
+ * on turn start, so it waits at most 5 seconds for cargo.
  */
-export function makeWorkspaceCrateNoteReader(services: CargoMetadataServices) {
-  const { fileSystem, path } = services;
-  const cargo = makeCargoMetadataReader(services);
+export function makeWorkspaceCrateNoteReader(services: {
+  readonly cargo: CargoMetadataReader["Service"];
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}) {
+  const { cargo, fileSystem, path } = services;
 
   return Effect.fn("readWorkspaceCrateNote")(function* (cwd: string) {
     // Cargo reports physical paths.
@@ -54,7 +59,9 @@ export function makeWorkspaceCrateNoteReader(services: CargoMetadataServices) {
     if (ownManifest === null) return "";
     const workspaceRoot = yield* cargo.findWorkspaceRoot(physicalCwd);
     if (workspaceRoot === null || workspaceRoot === physicalCwd) return "";
-    const metadata = yield* cargo.read(workspaceRoot, physicalCwd, ownManifest);
+    const metadata = yield* cargo
+      .read(workspaceRoot, { timeout: "5 seconds" })
+      .pipe(Effect.orElseSucceed(() => null));
     if (metadata === null) return "";
     // Cached metadata may come from another worktree of the same commit.
     const crateDir = path.join(metadata.workspace_root, path.relative(workspaceRoot, physicalCwd));

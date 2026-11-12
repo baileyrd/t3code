@@ -6,6 +6,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
+import { VcsProcessSpawnError } from "@t3tools/contracts";
+
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
@@ -75,5 +77,34 @@ it.live("works in the project's folder inside the worktree, and fails when it is
       yield* resolveThreadWorkspaceCwd(services, { workspaceRoot, worktreePath: null }),
       workspaceRoot,
     );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.live("fails in a worktree when git cannot read the project's repository", () =>
+  Effect.gen(function* () {
+    const { services, workspaceRoot, base, path } = yield* makeRepository;
+    const unreadable = {
+      ...services,
+      vcs: {
+        ...services.vcs,
+        detect: () =>
+          Effect.fail(
+            new VcsProcessSpawnError({
+              operation: "test.detect",
+              command: "git",
+              cwd: workspaceRoot,
+              cause: new Error("spawn git EMFILE"),
+            }),
+          ),
+      },
+    };
+
+    const error = yield* resolveThreadWorkspaceCwd(unreadable, {
+      workspaceRoot,
+      worktreePath: path.join(base, "worktree"),
+    }).pipe(Effect.flip);
+    assert.instanceOf(error, ThreadWorkspaceFolderMissingError);
+    assert.isTrue(error.repositoryUnreadable);
+    assert.isNull(yield* resolveProjectSubdirectory(unreadable, workspaceRoot));
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );

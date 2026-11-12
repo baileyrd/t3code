@@ -100,8 +100,13 @@ export function mergeShellSnapshotProjects(
       if (candidate === undefined || candidate.workspaceRoot !== project.workspaceRoot) {
         return project;
       }
-      const subdirectory = candidate.repositorySubdirectory ?? project.repositorySubdirectory;
-      if (resolvedRootSet?.has(project.workspaceRoot) === true) {
+      const resolved = resolvedRootSet?.has(project.workspaceRoot) === true;
+      // A re-resolved root is authoritative, so its null clears a folder the repository no longer has.
+      const subdirectory =
+        resolved && candidate.repositorySubdirectory !== undefined
+          ? candidate.repositorySubdirectory
+          : (candidate.repositorySubdirectory ?? project.repositorySubdirectory);
+      if (resolved) {
         // Refreshes re-resolve every root; an unchanged identity keeps the project's identity
         // so every subscriber (each pull request row, the sidebar) skips re-rendering.
         if (

@@ -982,8 +982,9 @@ function FolderBrowser(props: {
     browseFilterQuery,
   );
 
+  const packagesResult = packagesState.data;
   const packages = filterWorkspacePackages(
-    packagesState.data?.packages ?? [],
+    packagesResult?.status === "ok" ? packagesResult.packages : [],
     browsePath.filterQuery,
   );
   const hiddenPackageCount = Math.max(0, packages.length - MOBILE_PACKAGE_ROW_LIMIT);
@@ -1017,6 +1018,27 @@ function FolderBrowser(props: {
               {hiddenPackageCount} more. Type part of a name after the folder path to find one.
             </Text>
           ) : null}
+        </>
+      ) : null}
+      {packagesResult?.status === "failed" && props.onAddPackage !== undefined ? (
+        <>
+          <SectionTitle>Workspace packages</SectionTitle>
+          <ListSection>
+            <ListRow
+              title="Couldn't read the workspace. Try again"
+              subtitle={packagesResult.reason}
+              icon={
+                <SymbolView
+                  name="arrow.clockwise"
+                  size={Platform.OS === "android" ? 24 : 17}
+                  tintColorClassName="accent-icon-muted"
+                  type="monochrome"
+                />
+              }
+              isFirst
+              onPress={packagesState.refresh}
+            />
+          </ListSection>
         </>
       ) : null}
       <SectionTitle>Browse folders</SectionTitle>

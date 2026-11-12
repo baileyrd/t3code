@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { makeCargoMetadataReader } from "./cargoMetadata.ts";
 import {
   cargoWorkspaceDependencies,
   makeWorkspaceCrateNoteReader,
@@ -108,7 +109,6 @@ const output = (
 
 const workspaceFiles: Readonly<Record<string, string>> = {
   "/repo/Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
-  "/repo/Cargo.lock": "version = 4\n",
   "/repo/crates/mill/Cargo.toml": '[package]\nname = "mill"\n',
 };
 
@@ -156,7 +156,11 @@ const makeReader = (input: {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     return {
-      read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }),
+      read: makeWorkspaceCrateNoteReader({
+        cargo: makeCargoMetadataReader({ processRunner, fileSystem, path }),
+        fileSystem,
+        path,
+      }),
       runs,
       rustupRuns,
     };
@@ -173,7 +177,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
       Effect.gen(function* () {
         const { read, runs, rustupRuns } = yield* makeReader({});
         assert.equal(yield* read("/link/crates/mill"), millNote);
-        assert.equal(runs[0]?.cwd, "/repo/crates/mill");
+        assert.equal(runs[0]?.cwd, "/repo");
         assert.deepEqual(runs[0]?.env, {
           RUSTUP_TOOLCHAIN: "stable-x86_64-unknown-linux-gnu",
           RUSTUP_AUTO_INSTALL: "0",
@@ -232,7 +236,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
       );
       const { read, runs } = yield* makeReader({ files });
       yield* read("/missing/crates/mill");
-      assert.equal(runs[0]?.cwd, "/missing/crates/mill");
+      assert.equal(runs[0]?.cwd, "/missing");
     }).pipe(Effect.provide(Path.layer)),
   );
 
