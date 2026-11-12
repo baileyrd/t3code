@@ -90,6 +90,8 @@ import { isNonRepositoryGitStderr } from "../vcs/GitVcsDriverCore.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as CargoMetadata from "../workspace/cargoMetadata.ts";
+import { makeCargoSparsePathReader } from "../workspace/cargoSparsePaths.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
 
 export interface GitActionProgressReporter {
@@ -671,6 +673,7 @@ export const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const cargo = yield* CargoMetadata.CargoMetadataReader;
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const changeRequestTermsFor = Effect.fn("GitManager.changeRequestTermsFor")(function* (
@@ -773,20 +776,41 @@ export const make = Effect.gen(function* () {
     Stream.runForEach(() => gitCore.clearWorktreeCheckoutCache),
     Effect.forkScoped,
   );
+  const cargoSparsePaths = makeCargoSparsePathReader({ cargo, fileSystem, path });
+  /** Sparse paths for a project that opted in; null, with a log line, when cargo can't say. */
+  const readSparseCheckout = Effect.fn("GitManager.readSparseCheckout")(function* (cwd: string) {
+    const paths = yield* cargoSparsePaths.read(cwd);
+    if (paths === null) {
+      yield* Effect.logWarning("sparse worktree skipped: cargo couldn't read the workspace", {
+        cwd,
+      });
+      return null;
+    }
+    // The paths come from the project's checkout; the worktree's ref may add crates.
+    return { paths, resolve: cargoSparsePaths.read };
+  });
+  /** The project's submodule mode, and its sparse checkout when it opted into sparse worktrees. */
+  const readProjectWorktreeOptions = Effect.fn("GitManager.readProjectWorktreeOptions")(function* (
+    input: Parameters<typeof projectSettingsFor>[0],
+  ) {
+    const settings = yield* projectSettingsFor(input).pipe(
+      Effect.map(({ settings }) => settings),
+      Effect.orElseSucceed(() => null),
+    );
+    return {
+      submodules: settings?.worktreeSubmodules ?? null,
+      sparse: settings?.sparseWorktrees === true ? yield* readSparseCheckout(input.cwd) : null,
+    };
+  });
   const createWorktree: GitManager["Service"]["createWorktree"] = Effect.fn(
     "GitManager.createWorktree",
   )(function* (input, options) {
-    const submodules =
-      options?.submodules !== undefined
-        ? options.submodules
-        : yield* projectSettingsFor(input).pipe(
-            Effect.map(({ settings }) => settings.worktreeSubmodules),
-            Effect.orElseSucceed(() => null),
-          );
+    const project = yield* readProjectWorktreeOptions(input);
     const result = yield* gitCore.createWorktree(input, {
       ...(yield* readWorktreeCreationSettings),
+      sparse: project.sparse,
       ...options,
-      submodules,
+      submodules: options?.submodules !== undefined ? options.submodules : project.submodules,
     });
     if (input.newRefName && input.baseRefName) {
       yield* shareBranchBase(input.cwd, input.newRefName);
@@ -3143,10 +3167,7 @@ export const make = Effect.gen(function* () {
         },
         {
           ...(yield* readWorktreeCreationSettings),
-          submodules: yield* projectSettingsFor(input).pipe(
-            Effect.map(({ settings }) => settings.worktreeSubmodules),
-            Effect.orElseSucceed(() => null),
-          ),
+          ...(yield* readProjectWorktreeOptions(input)),
         },
       );
       yield* ensureExistingWorktreeUpstream(worktree.worktree.path);

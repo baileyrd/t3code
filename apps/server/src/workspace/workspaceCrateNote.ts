@@ -3,6 +3,8 @@ import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 
+import type * as ProcessRunner from "../processRunner.ts";
+
 import {
   type CargoMetadata,
   type CargoMetadataReader,
@@ -34,9 +36,18 @@ export function cargoWorkspaceDependencies(
 /** One line for the agent; "" when there is nothing worth the tokens. */
 export function workspaceCrateNoteText(
   result: ReturnType<typeof cargoWorkspaceDependencies>,
+  sparse = false,
 ): string {
-  if (result === null || result.dependencies.length === 0) return "";
-  return `This folder is the \`${result.crate}\` crate of a Cargo workspace. Its workspace dependencies: ${result.dependencies.join(", ")}.`;
+  if (result === null || (result.dependencies.length === 0 && !sparse)) return "";
+  const crate = `This folder is the \`${result.crate}\` crate of a Cargo workspace.`;
+  const dependencies =
+    result.dependencies.length === 0
+      ? ""
+      : ` Its workspace dependencies: ${result.dependencies.join(", ")}.`;
+  const hint = sparse
+    ? " This worktree is a sparse checkout of only those crates; run `git sparse-checkout add <folder>` before working in another."
+    : "";
+  return `${crate}${dependencies}${hint}`;
 }
 
 /**
@@ -46,10 +57,24 @@ export function workspaceCrateNoteText(
  */
 export function makeWorkspaceCrateNoteReader(services: {
   readonly cargo: CargoMetadataReader["Service"];
+  readonly processRunner: ProcessRunner.ProcessRunner["Service"];
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
 }) {
   const { cargo, fileSystem, path } = services;
+  const isSparseCheckout = (cwd: string) =>
+    services.processRunner
+      .run({
+        command: "git",
+        args: ["config", "--get", "--type=bool", "core.sparseCheckout"],
+        cwd,
+        timeout: "5 seconds",
+        timeoutBehavior: "timedOutResult",
+      })
+      .pipe(
+        Effect.map((output) => output.code === 0 && output.stdout.trim() === "true"),
+        Effect.orElseSucceed(() => false),
+      );
 
   return Effect.fn("readWorkspaceCrateNote")(function* (cwd: string) {
     // Cargo reports physical paths.
@@ -69,6 +94,9 @@ export function makeWorkspaceCrateNoteReader(services: {
     if (metadata === null) return "";
     // Cached metadata may come from another worktree of the same commit.
     const crateDir = path.join(metadata.workspace_root, path.relative(workspaceRoot, physicalCwd));
-    return workspaceCrateNoteText(cargoWorkspaceDependencies(metadata, crateDir));
+    return workspaceCrateNoteText(
+      cargoWorkspaceDependencies(metadata, crateDir),
+      yield* isSparseCheckout(physicalCwd),
+    );
   });
 }

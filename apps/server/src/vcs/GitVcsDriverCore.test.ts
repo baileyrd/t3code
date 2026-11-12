@@ -809,6 +809,137 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     ).pipe(Effect.provide(layerTest)),
 );
 
+interface TestSparsePaths {
+  readonly directories: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<string>;
+}
+
+/**
+ * A repository with two crates, worktree-created from `crates/a` with `paths` built from it;
+ * cargo in the worktree answers `needs(worktree)` each time.
+ */
+const createSparseWorktree = (input: {
+  readonly paths: (repository: string) => TestSparsePaths;
+  readonly needs: (worktree: string) => TestSparsePaths | null;
+}) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const repository = NodeFS.realpathSync.native(yield* makeTmpDir());
+    const { initialBranch } = yield* initRepoWithCommit(repository);
+    for (const file of [
+      ".cargo/config.toml",
+      "crates/.cargo/config.toml",
+      "crates/AGENTS.md",
+      "crates/a/Cargo.toml",
+      "crates/a/src/lib.rs",
+      "crates/b/Cargo.toml",
+      "crates/b/src/lib.rs",
+      "docs/guide.md",
+    ]) {
+      yield* writeTextFile(repository, file, file);
+    }
+    yield* git(repository, ["add", "."]);
+    yield* git(repository, ["commit", "-m", "crates"]);
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "sparse");
+    const resolved: string[] = [];
+    yield* driver.createWorktree(
+      {
+        cwd: path.join(repository, "crates", "a"),
+        path: worktreePath,
+        refName: initialBranch,
+        newRefName: "feature/sparse",
+      },
+      {
+        sparse: {
+          paths: input.paths(repository),
+          resolve: (projectCwd) =>
+            Effect.sync(() => {
+              resolved.push(projectCwd);
+              return input.needs(NodeFS.realpathSync.native(worktreePath));
+            }),
+        },
+      },
+    );
+    const present = (file: string) => fs.exists(path.join(worktreePath, file));
+    assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+    return { present, resolved, worktreePath, path };
+  });
+
+const crateA = (root: string): TestSparsePaths => ({
+  directories: [`${root}/crates/a`, "/elsewhere/crate"],
+  files: [`${root}/crates/b/Cargo.toml`],
+});
+
+it.effect("checks out only the sparse paths, the root's files and their parents' files", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { present, resolved, worktreePath, path } = yield* createSparseWorktree({
+        paths: crateA,
+        needs: crateA,
+      });
+      assert.deepEqual(resolved, [path.join(worktreePath, "crates", "a")]);
+      for (const file of [
+        "README.md",
+        ".cargo/config.toml",
+        "crates/.cargo/config.toml",
+        "crates/AGENTS.md",
+        "crates/a/src/lib.rs",
+        "crates/b/Cargo.toml",
+      ]) {
+        assert.isTrue(yield* present(file), file);
+      }
+      for (const file of ["crates/b/src/lib.rs", "docs/guide.md"]) {
+        assert.isFalse(yield* present(file), file);
+      }
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("adds the crates the worktree's own ref depends on", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const withB = (root: string): TestSparsePaths => ({
+        ...crateA(root),
+        directories: [...crateA(root).directories, `${root}/crates/b`],
+      });
+      const { present, resolved } = yield* createSparseWorktree({ paths: crateA, needs: withB });
+      assert.equal(resolved.length, 2);
+      assert.isTrue(yield* present("crates/b/src/lib.rs"));
+      assert.isFalse(yield* present("docs/guide.md"));
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([
+  ["cargo can't read the sparse worktree", (repository: string) => repository, () => null],
+  ["the project's folder is spelled outside the repository", () => "/elsewhere", crateA],
+  [
+    "the crates it needs keep changing",
+    (repository: string) => repository,
+    (() => {
+      let round = 0;
+      return (worktree: string): TestSparsePaths => ({
+        directories: [`${worktree}/crates/a`, `${worktree}/round-${round++}`],
+        files: [],
+      });
+    })(),
+  ],
+] as const)("checks out the whole worktree when %s", ([, root, needs]) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { present } = yield* createSparseWorktree({
+        paths: (repository) => ({ directories: [`${root(repository)}/crates/a`], files: [] }),
+        needs,
+      });
+      for (const file of ["crates/b/src/lib.rs", "docs/guide.md"]) {
+        assert.isTrue(yield* present(file), file);
+      }
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "preserves a trailing carriage return in the repository root after creation through an alias",
   () =>

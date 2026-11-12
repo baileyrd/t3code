@@ -209,6 +209,17 @@ terminals in the same folder inside the worktree. A script that needs the reposi
 `cd "$T3CODE_WORKTREE_PATH"`. If the folder doesn't exist on the thread's branch, the turn fails
 instead of starting at the repository root.
 
+When the project is one crate of a Cargo workspace, turn on **Settings → Worktrees → Sparse
+checkout** for that project to check out only the crate, the workspace crates it builds against,
+the files at the repository root, and the manifests Cargo reads to resolve the workspace. Before
+the thread starts, T3 Code asks Cargo in the new worktree what the crate needs on that branch and
+adds any crate the branch brings in; if Cargo can't read it, the worktree gets a full checkout
+instead, and the server log says why. Each sparse worktree waits on about two Cargo workspace
+listings, so it starts more slowly than a full one would on a small repository. The agent
+is told the worktree is sparse. In the worktree, run `git sparse-checkout add <folder>` to bring in
+another folder, or `git sparse-checkout disable` to check out everything. Cargo must be able to read
+the workspace offline in the project's folder.
+
 ## Fast worktree checkout on macOS
 
 Fast worktree checkout is a beta. Turn it on for each Mac in **Settings → Labs → Fast worktree

@@ -64,6 +64,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as CargoMetadata from "../workspace/cargoMetadata.ts";
 import * as GitManager from "./GitManager.ts";
 
 /** A change request the fake host reports. Omitted fields read as an open, undated request. */
@@ -743,6 +744,7 @@ const asThreadId = (threadId: string) => threadId as ThreadId;
 const layerGitManagerTest = GitVcsDriver.layer.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
   Layer.provideMerge(VcsProcess.layer),
+  Layer.provideMerge(CargoMetadata.layerLive),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 

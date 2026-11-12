@@ -63,6 +63,7 @@ import {
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import { makeWorkspaceCrateNoteReader } from "../workspace/workspaceCrateNote.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as CargoMetadata from "../workspace/cargoMetadata.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
@@ -172,6 +173,7 @@ export const layer: Layer.Layer<
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | CargoMetadata.CargoMetadataReader
+  | ProcessRunner.ProcessRunner
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -192,6 +194,7 @@ export const layer: Layer.Layer<
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const readWorkspaceCrateNote = makeWorkspaceCrateNoteReader({
       cargo: yield* CargoMetadata.CargoMetadataReader,
+      processRunner: yield* ProcessRunner.ProcessRunner,
       fileSystem,
       path,
     });

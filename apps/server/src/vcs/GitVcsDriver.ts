@@ -45,6 +45,7 @@ import {
 import * as CheckoutCloner from "./CheckoutCloner.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import type { SparseCheckoutPaths } from "./sparseCheckoutPatterns.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -139,6 +140,12 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface SparseCheckout {
+  readonly paths: SparseCheckoutPaths;
+  /** The paths the project's folder needs within the sparse worktree; null checks out everything. */
+  readonly resolve: (projectCwd: string) => Effect.Effect<SparseCheckoutPaths | null>;
+}
+
 export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
@@ -146,6 +153,8 @@ export interface CreateWorktreeOptions {
   readonly worktreesDirectory?: string;
   /** Clone the checkout from the macOS worktree checkout cache. */
   readonly fastCheckout?: boolean;
+  /** Check out only these paths; null or omitted checks out everything. */
+  readonly sparse?: SparseCheckout | null;
 }
 
 export interface GitCommitProgress {

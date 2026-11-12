@@ -50,6 +50,7 @@ import {
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
+import { relativeTo, sparseCheckoutPatterns } from "./sparseCheckoutPatterns.ts";
 import {
   parseRemoteNames,
   parseRemoteNamesInGitOrder,
@@ -78,6 +79,8 @@ const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
 const REVIEW_DIFF_PATCH_MAX_OUTPUT_BYTES = 120_000;
+// A ref that adds crates needs one more round; more means the answer keeps moving.
+const SPARSE_WIDEN_ROUNDS = 3;
 const REVIEW_METADATA_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 // Temporary-index git add scales poorly (50k files took ~30 s); report incomplete totals above this cap.
 const REVIEW_UNTRACKED_MAX_FILES = 5_000;
@@ -4525,6 +4528,99 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* refresh;
   });
 
+  /**
+   * Checks out a `--no-checkout` worktree holding only the sparse paths, then widens it with what
+   * the project needs on the worktree's own ref until that adds nothing. Anything short of that
+   * checks out the whole worktree, since a worktree missing files the agent needs is worse.
+   */
+  const checkOutSparse = Effect.fn("GitVcsDriver.createWorktree.checkOutSparse")(function* (
+    cwd: string,
+    worktreePath: string,
+    sparse: GitVcsDriver.SparseCheckout,
+  ) {
+    const physical = (dir: string) =>
+      fileSystem.realPath(dir).pipe(Effect.orElseSucceed(() => dir));
+    const repoRoot = yield* physical(
+      (yield* runGitStdout("GitVcsDriver.createWorktree.repoRoot", cwd, [
+        "rev-parse",
+        "--show-toplevel",
+      ])).trim(),
+    );
+    const projectFolder = relativeTo(repoRoot, yield* physical(cwd));
+    if (projectFolder === null) {
+      yield* Effect.logInfo("sparse worktree skipped: the project is the repository root", {
+        worktreePath,
+      });
+      yield* runGit("GitVcsDriver.createWorktree.fullCheckout", worktreePath, ["checkout"], {
+        timeoutMs: null,
+      });
+      return;
+    }
+    const projectCwd = path.join(worktreePath, ...projectFolder.split("/"));
+    const worktreeRoot = yield* physical(worktreePath);
+    /** Paths cargo read in the worktree, spelled under `repoRoot` like the first ones. */
+    const fromWorktree = (paths: ReadonlyArray<string>) =>
+      paths.flatMap((file) => {
+        const relative = relativeTo(worktreeRoot, file);
+        return relative === null ? [] : [path.join(repoRoot, ...relative.split("/"))];
+      });
+    const applyPatterns = (patterns: ReadonlyArray<string>) =>
+      runGit(
+        "GitVcsDriver.createWorktree.sparseCheckout",
+        worktreePath,
+        ["sparse-checkout", "set", "--no-cone", "--stdin"],
+        { stdin: `${patterns.join("\n")}\n`, timeoutMs: null },
+      );
+
+    const widen = Effect.fn("GitVcsDriver.createWorktree.widenSparse")(function* () {
+      let paths = sparse.paths;
+      let patterns = sparseCheckoutPatterns(repoRoot, paths);
+      if (patterns === null) return "repository root and crate paths disagree";
+      yield* applyPatterns(patterns);
+      // Populates the empty index and working tree, honouring the patterns and running hooks.
+      yield* runGit("GitVcsDriver.createWorktree.sparseCheckoutFiles", worktreePath, ["checkout"], {
+        timeoutMs: null,
+      });
+      for (let round = 0; round < SPARSE_WIDEN_ROUNDS; round++) {
+        const needed = yield* sparse.resolve(projectCwd);
+        if (needed === null) return "cargo can't read the sparse worktree";
+        paths = {
+          directories: [...paths.directories, ...fromWorktree(needed.directories)],
+          files: [...paths.files, ...fromWorktree(needed.files)],
+        };
+        const widened = sparseCheckoutPatterns(repoRoot, paths);
+        if (widened === null) return "repository root and crate paths disagree";
+        if (widened.join("\n") === patterns.join("\n")) return null;
+        patterns = widened;
+        yield* applyPatterns(patterns);
+      }
+      return "the crates it needs kept changing";
+    });
+
+    const reason = yield* widen().pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("sparse checkout failed", { worktreePath, cause }).pipe(
+          Effect.as("sparse checkout failed"),
+        ),
+      ),
+    );
+    if (reason === null) return;
+    yield* Effect.logWarning("checking out the whole worktree instead of a sparse one", {
+      worktreePath,
+      reason,
+    });
+    // Fills in everything the patterns left out, so it can take as long as a full checkout.
+    yield* runGit(
+      "GitVcsDriver.createWorktree.disableSparse",
+      worktreePath,
+      ["sparse-checkout", "disable"],
+      { timeoutMs: null },
+    );
+    yield* runGit("GitVcsDriver.createWorktree.fullCheckout", worktreePath, ["checkout"], {
+      timeoutMs: null,
+    });
+  });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -4592,7 +4688,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
-    const fastCheckout = checkoutCache !== undefined && options?.fastCheckout === true;
+    const sparse = options?.sparse ?? null;
+    // The checkout cache clones whole checkouts, so sparse worktrees take the stock path.
+    const fastCheckout =
+      checkoutCache !== undefined && options?.fastCheckout === true && sparse === null;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
@@ -4602,6 +4701,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         `checkout.workers=${checkoutWorkers}`,
         "worktree",
         "add",
+        // Sparse worktrees check out once their patterns are written.
+        ...(sparse === null ? [] : ["--no-checkout"]),
         "--",
         worktreePath,
         checkoutRef,
@@ -4648,6 +4749,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
     if (fastCheckout) {
       yield* checkoutCache.schedule(worktreePath, cacheGeneration);
+    }
+    if (sparse !== null) {
+      yield* checkOutSparse(input.cwd, worktreePath, sparse);
     }
 
     if (progress?.onWorktreeClaimed) {

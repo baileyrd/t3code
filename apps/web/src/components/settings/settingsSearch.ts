@@ -801,6 +801,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["git submodule init recursive top-level none worktree t3.json"],
   },
   {
+    id: "sparse-worktrees",
+    title: "Sparse checkout",
+    to: "/settings/worktrees",
+    scope: "project-defaults",
+    searchTerms: ["sparse checkout cargo crate workspace monorepo dependencies worktree"],
+  },
+  {
     id: "start-from-origin",
     title: "Start from remote",
     to: "/settings/worktrees",

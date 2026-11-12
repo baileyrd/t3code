@@ -427,7 +427,9 @@ const layerPullRequestService = PullRequestService.layer.pipe(
 );
 
 const layerGitManager = GitManager.layer.pipe(
-  Layer.provide(Layer.merge(ProjectionStoreV2.layer, ProjectStore.layer)),
+  Layer.provide(
+    Layer.mergeAll(ProjectionStoreV2.layer, ProjectStore.layer, CargoMetadata.layerLive),
+  ),
   Layer.provideMerge(RuntimeLayer.layerProjectSetupScriptRunner),
   Layer.provideMerge(WorktreeSetupTracker.layer),
   Layer.provideMerge(GitVcsDriver.layer),

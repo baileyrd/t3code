@@ -58,6 +58,7 @@ import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
+import * as ProcessRunner from "../../processRunner.ts";
 import * as CargoMetadata from "../../workspace/cargoMetadata.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
@@ -438,6 +439,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(
       Layer.mergeAll(
         CargoMetadata.layerLive,
+        ProcessRunner.layer,
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

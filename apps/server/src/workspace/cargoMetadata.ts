@@ -101,6 +101,7 @@ const NO_RUSTC_OVERRIDES = {
 const CARGO_TIMEOUT = "30 seconds";
 // `--no-deps` metadata of a few hundred crates is a few MB; leave room for much larger ones.
 const CARGO_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const NO_DEPS_ARGS = ["metadata", "--format-version", "1", "--no-deps", "--offline"];
 
 // Pinned when rustup is missing: a lone rustup `cargo` shim still proxies, and refuses this name;
 // a non-rustup cargo ignores the variable.
@@ -227,12 +228,29 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
     return cachedToolchain.name;
   });
 
-  const runCargo = Effect.fn("CargoMetadata.runCargo")(function* (root: string, toolchain: string) {
+  /** Cargo's stdout for `args` in `cwd`, on the pinned toolchain with no rustc overrides. */
+  const runCargo = Effect.fn("CargoMetadata.runCargo")(function* (
+    cwd: string,
+    args: ReadonlyArray<string>,
+  ) {
+    const toolchain = yield* resolveToolchain(cwd);
+    return yield* runPinned(cwd, args, toolchain).pipe(
+      // Drop the toolchain in case it was switched or uninstalled.
+      Effect.tapError(() => Effect.sync(() => (cachedToolchain = undefined))),
+    );
+  });
+
+  const runPinned = Effect.fnUntraced(function* (
+    cwd: string,
+    args: ReadonlyArray<string>,
+    toolchain: string,
+  ) {
+    const command = `\`cargo ${args[0] ?? ""}\``;
     const output = yield* services.processRunner
       .run({
         command: "cargo",
-        args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
-        cwd: root,
+        args,
+        cwd,
         env: { ...NO_RUSTC_OVERRIDES, RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
         timeout: CARGO_TIMEOUT,
         timeoutBehavior: "timedOutResult",
@@ -243,27 +261,23 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
           fail(
             error._tag === "ProcessSpawnError" && isCommandMissingCause(error.cause)
               ? "`cargo` is not installed on this machine."
-              : `\`cargo metadata\` could not run: ${error.message}`,
+              : `${command} could not run: ${error.message}`,
           ),
         ),
       );
-    if (output.timedOut) return yield* fail("`cargo metadata` took too long.");
+    if (output.timedOut) return yield* fail(`${command} took too long.`);
     if (output.code !== 0) {
       const detail = cargoFailureLine(output.stderr);
-      return yield* fail(`\`cargo metadata\` failed${detail === "" ? "." : `: ${detail}`}`);
+      return yield* fail(`${command} failed${detail === "" ? "." : `: ${detail}`}`);
     }
-    const metadata = decodeCargoMetadata(output.stdout);
-    if (Option.isNone(metadata)) return yield* fail("`cargo metadata` gave unreadable output.");
-    return metadata.value;
+    return output.stdout;
   });
 
   /** Runs cargo for one workspace state and records what it found. */
   const load = Effect.fn("CargoMetadata.load")(function* (root: string, rootManifest: string) {
-    const toolchain = yield* resolveToolchain(root);
-    const metadata = yield* runCargo(root, toolchain).pipe(
-      // Drop the toolchain in case it was switched or uninstalled.
-      Effect.tapError(() => Effect.sync(() => (cachedToolchain = undefined))),
-    );
+    const decoded = decodeCargoMetadata(yield* runCargo(root, NO_DEPS_ARGS));
+    if (Option.isNone(decoded)) return yield* fail("`cargo metadata` gave unreadable output.");
+    const metadata = decoded.value;
     const members = cargoWorkspaceMembers(metadata).map((member) => member.relativePath);
     remember(membersByRootManifest, Hash.string(rootManifest), members);
     remember(metadataByFingerprint, yield* fingerprint(root, rootManifest, members), metadata);
@@ -315,7 +329,11 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
     return yield* Deferred.await(deferred);
   });
 
-  return { isWorkspaceRoot, findWorkspaceRoot, read };
+  /** Cargo's stdout for `args` in `cwd`, sharing the toolchain pin and the bound on cargo runs. */
+  const run = (cwd: string, args: ReadonlyArray<string>) =>
+    cargoRuns.withPermits(1)(runCargo(cwd, args));
+
+  return { isWorkspaceRoot, findWorkspaceRoot, read, run };
 }
 
 /** One reader per server, so the crate note and the package list share its cache. */
