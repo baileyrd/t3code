@@ -252,11 +252,25 @@ describe("makeWorkspaceCrateNoteReader", () => {
     }).pipe(Effect.provide(Path.layer)),
   );
 
-  effectIt.effect("runs cargo unpinned when rustup is not installed", () =>
+  effectIt.effect("pins a toolchain no rustup shim has when rustup is not installed", () =>
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({ rustupDefault: "missing" });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
-      assert.isUndefined(runs[0]?.env);
+      assert.deepEqual(runs[0]?.env, {
+        RUSTUP_TOOLCHAIN: "t3code-no-toolchain",
+        RUSTUP_AUTO_INSTALL: "0",
+      });
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("asks rustup again after it timed out", () =>
+    Effect.gen(function* () {
+      const { read, rustupRuns } = yield* makeReader({
+        rustupDefault: output({ timedOut: true, code: null }),
+      });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),
   );
 });
