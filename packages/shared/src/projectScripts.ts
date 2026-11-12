@@ -28,13 +28,32 @@ interface ProjectScriptRuntimeEnvInput {
   extraEnv?: Record<string, string>;
 }
 
+/** The project's folder below its repository root, `/`-separated; "" at the root or when unknown. */
+export function projectSubdirectory(
+  repositoryRoot: string | null | undefined,
+  workspaceRoot: string,
+): string {
+  if (!repositoryRoot) return "";
+  const root = repositoryRoot.replace(/[\\/]+$/, "");
+  const rest = workspaceRoot.slice(root.length);
+  if (!workspaceRoot.startsWith(root) || !/^[\\/]/.test(rest)) return "";
+  return rest.replace(/^[\\/]+|[\\/]+$/g, "").replaceAll("\\", "/");
+}
+
+/** Where a thread works: the project folder, or the same folder inside the thread's worktree. */
 export function projectScriptCwd(input: {
   project: {
     cwd: string;
+    repositoryRoot?: string | null | undefined;
   };
   worktreePath?: string | null;
 }): string {
-  return input.worktreePath ?? input.project.cwd;
+  const { worktreePath } = input;
+  if (worktreePath == null) return input.project.cwd;
+  const subdirectory = projectSubdirectory(input.project.repositoryRoot, input.project.cwd);
+  if (subdirectory === "") return worktreePath;
+  const separator = worktreePath.includes("\\") && !worktreePath.includes("/") ? "\\" : "/";
+  return `${worktreePath.replace(/[\\/]+$/, "")}${separator}${subdirectory.replaceAll("/", separator)}`;
 }
 
 export function projectScriptRuntimeEnv(

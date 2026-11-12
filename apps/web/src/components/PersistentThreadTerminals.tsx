@@ -180,7 +180,10 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     launchContext?.cwd ??
     (project
       ? projectScriptCwd({
-          project: { cwd: project.workspaceRoot },
+          project: {
+            cwd: project.workspaceRoot,
+            repositoryRoot: project.repositoryIdentity?.rootPath,
+          },
           worktreePath: effectiveWorktreePath,
         })
       : null);
@@ -342,7 +345,15 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
   const cwd =
     launchContext?.cwd ??
     activeSummary?.cwd ??
-    (project ? projectScriptCwd({ project: { cwd: project.workspaceRoot }, worktreePath }) : null);
+    (project
+      ? projectScriptCwd({
+          project: {
+            cwd: project.workspaceRoot,
+            repositoryRoot: project.repositoryIdentity?.rootPath,
+          },
+          worktreePath,
+        })
+      : null);
   const runtimeEnv = project
     ? projectScriptRuntimeEnv({ project: { cwd: project.workspaceRoot }, worktreePath })
     : {};
@@ -364,7 +375,10 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
         launchContext?.cwd ??
         summary?.cwd ??
         projectScriptCwd({
-          project: { cwd: project.workspaceRoot },
+          project: {
+            cwd: project.workspaceRoot,
+            repositoryRoot: project.repositoryIdentity?.rootPath,
+          },
           worktreePath: terminalWorktreePath,
         }),
       worktreePath: terminalWorktreePath,

@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -18,6 +19,8 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { resolveThreadWorkspaceCwd } from "../workspace/threadWorkspaceCwd.ts";
 
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
@@ -143,10 +146,16 @@ export const layerFromProjectStore: Layer.Layer<
   | ProjectStore.ProjectStoreV2
   | ProviderInstanceRegistry.ProviderInstanceRegistry
   | ServerSettings.ServerSettingsService
+  | VcsDriverRegistry.VcsDriverRegistry
+  | FileSystem.FileSystem
 > = Layer.effect(
   RuntimePolicyV2,
   Effect.gen(function* () {
     const projects = yield* ProjectStore.ProjectStoreV2;
+    const workspace = {
+      vcs: yield* VcsDriverRegistry.VcsDriverRegistry,
+      fileSystem: yield* FileSystem.FileSystem,
+    };
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     // The same ceiling the orchestrator enforces, fixed for the server's life.
     const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
@@ -159,31 +168,29 @@ export const layerFromProjectStore: Layer.Layer<
           instance === undefined
             ? undefined
             : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
-        const cwd =
-          input.thread.worktreePath ??
-          (yield* projects.get(input.thread.projectId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new RuntimePolicyResolveError({
-                  projectId: input.thread.projectId,
-                  providerInstanceId: input.modelSelection.instanceId,
-                  cause,
-                }),
-            ),
-            Effect.flatMap(
-              Option.match({
-                onNone: () =>
-                  Effect.fail(
-                    new RuntimePolicyResolveError({
-                      projectId: input.thread.projectId,
-                      providerInstanceId: input.modelSelection.instanceId,
-                      cause: "Project not found.",
-                    }),
-                  ),
-                onSome: (project) => Effect.succeed(project.workspaceRoot),
+        const project = yield* projects.get(input.thread.projectId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
               }),
-            ),
-          ));
+          ),
+        );
+        const cwd = Option.isSome(project)
+          ? yield* resolveThreadWorkspaceCwd(workspace, {
+              workspaceRoot: project.value.workspaceRoot,
+              worktreePath: input.thread.worktreePath,
+            })
+          : input.thread.worktreePath;
+        if (cwd === null) {
+          return yield* new RuntimePolicyResolveError({
+            projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause: "Project not found.",
+          });
+        }
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,

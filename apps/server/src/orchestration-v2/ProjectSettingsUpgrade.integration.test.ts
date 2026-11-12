@@ -126,7 +126,7 @@ const layerRuntime = (dbPath: string) => {
     prefix: "t3-project-upgrade-",
   });
   const layerCheckpointStore = CheckpointStore.layer.pipe(
-    Layer.provide(
+    Layer.provideMerge(
       VcsDriverRegistry.layer.pipe(
         Layer.provide(VcsProcess.layer),
         Layer.provide(layerServerConfig),

@@ -40,6 +40,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
+import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
 import { acpCompletedTurnShouldTerminalizeTool } from "@t3tools/provider-acp/server/adapter";
@@ -343,10 +344,14 @@ describe("Grok launch permission mode", () => {
           RuntimePolicy.layerFromProjectStore.pipe(
             Layer.provide(ServerSettings.layerTest()),
             Layer.provide(
-              Layer.mock(ProjectStore.ProjectStoreV2)({
-                get: () => Effect.die("the thread has a worktree"),
+              Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedNone }),
+            ),
+            Layer.provide(
+              Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+                detect: () => Effect.succeed(null),
               }),
             ),
+            Layer.provide(FileSystem.layerNoop({})),
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
                 getInstance: () =>
