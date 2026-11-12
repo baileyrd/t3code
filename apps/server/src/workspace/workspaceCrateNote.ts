@@ -1,3 +1,5 @@
+import { isCommandMissingCause } from "@t3tools/provider-core/server/snapshotProbe";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Hash from "effect/Hash";
 import type * as FileSystem from "effect/FileSystem";
@@ -68,6 +70,12 @@ const WORKSPACE_TABLE = /^\s*\[workspace\]/m;
 // A toolchain name, never a path: `RUSTUP_TOOLCHAIN=/dir` would run that folder's `bin/cargo`.
 const TOOLCHAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const CACHE_CAPACITY = 64;
+const TOOLCHAIN_TTL_MS = 5 * 60 * 1000;
+
+type CargoToolchain =
+  | { readonly _tag: "Pinned"; readonly name: string }
+  | { readonly _tag: "Plain" }
+  | { readonly _tag: "Unknown" };
 
 interface WorkspaceCrateNoteServices {
   readonly processRunner: ProcessRunner.ProcessRunner["Service"];
@@ -99,44 +107,63 @@ export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteService
     }
   });
 
-  /**
-   * The user's default rustup toolchain, read once outside any repository. `cargo` is a rustup
-   * proxy that obeys a repository's `rust-toolchain(.toml)`, which can name a folder whose
-   * `bin/cargo` it then runs; pinning `RUSTUP_TOOLCHAIN` overrides every such file.
-   */
-  let defaultToolchain: string | undefined;
-  const readDefaultToolchain = Effect.fn("WorkspaceCrateNote.readDefaultToolchain")(function* (
-    cwd: string,
-  ) {
-    if (defaultToolchain !== undefined) return defaultToolchain;
-    const output = yield* services.processRunner
+  const readDefaultToolchain = (cwd: string) =>
+    services.processRunner
       .run({
         command: "rustup",
         args: ["default"],
-        cwd: rootOf(cwd),
+        cwd,
         timeout: "5 seconds",
         timeoutBehavior: "timedOutResult",
       })
-      .pipe(Effect.option);
-    const name =
-      output._tag === "Some" && output.value.code === 0 && !output.value.timedOut
-        ? (output.value.stdout.trim().split(/\s+/)[0] ?? "")
-        : "";
-    if (!TOOLCHAIN_NAME.test(name)) return null;
-    defaultToolchain = name;
-    return name;
+      .pipe(
+        Effect.map((output): CargoToolchain => {
+          const name =
+            output.code === 0 && !output.timedOut
+              ? (output.stdout.trim().split(/\s+/)[0] ?? "")
+              : "";
+          return TOOLCHAIN_NAME.test(name) ? { _tag: "Pinned", name } : { _tag: "Unknown" };
+        }),
+        Effect.catch((error) =>
+          Effect.succeed<CargoToolchain>(
+            error._tag === "ProcessSpawnError" && isCommandMissingCause(error.cause)
+              ? { _tag: "Plain" }
+              : { _tag: "Unknown" },
+          ),
+        ),
+      );
+
+  /**
+   * How to run cargo, kept for a few minutes. `cargo` is usually a rustup proxy that obeys a
+   * repository's `rust-toolchain(.toml)`, which can name a folder whose `bin/cargo` it then runs;
+   * pinning `RUSTUP_TOOLCHAIN` to the user's default overrides every such file. Without rustup,
+   * cargo reads no toolchain file and runs as is.
+   */
+  let cachedToolchain: { readonly value: CargoToolchain; readonly at: number } | undefined;
+  const resolveToolchain = Effect.fn("WorkspaceCrateNote.resolveToolchain")(function* (
+    cwd: string,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    if (cachedToolchain !== undefined && now - cachedToolchain.at < TOOLCHAIN_TTL_MS) {
+      return cachedToolchain.value;
+    }
+    const value = yield* readDefaultToolchain(rootOf(cwd));
+    cachedToolchain = { value, at: now };
+    return value;
   });
 
   const runCargo = Effect.fn("WorkspaceCrateNote.runCargo")(function* (
     cwd: string,
-    toolchain: string,
+    toolchain: Exclude<CargoToolchain, { readonly _tag: "Unknown" }>,
   ) {
     const output = yield* services.processRunner
       .run({
         command: "cargo",
         args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
         cwd,
-        env: { RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
+        ...(toolchain._tag === "Pinned"
+          ? { env: { RUSTUP_TOOLCHAIN: toolchain.name, RUSTUP_AUTO_INSTALL: "0" } }
+          : {}),
         timeout: "5 seconds",
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: 8 * 1024 * 1024,
@@ -166,11 +193,14 @@ export function makeWorkspaceCrateNoteReader(services: WorkspaceCrateNoteService
     const cached = notes.get(key);
     if (cached !== undefined) return cached;
     // Without a known default toolchain, cargo would follow the repository's toolchain file.
-    const toolchain = yield* readDefaultToolchain(physicalCwd);
-    if (toolchain === null) return "";
+    const toolchain = yield* resolveToolchain(physicalCwd);
+    if (toolchain._tag === "Unknown") return "";
     const note = yield* runCargo(physicalCwd, toolchain);
-    // Failures stay uncached so a slow or locked cargo gets another try on the next thread.
-    if (note === null) return "";
+    // Failures stay uncached, and drop the toolchain in case it was switched or uninstalled.
+    if (note === null) {
+      cachedToolchain = undefined;
+      return "";
+    }
     const oldest = notes.keys().next();
     if (notes.size >= CACHE_CAPACITY && oldest.done !== true) notes.delete(oldest.value);
     notes.set(key, note);

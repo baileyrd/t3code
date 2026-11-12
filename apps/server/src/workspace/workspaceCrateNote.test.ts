@@ -4,9 +4,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/process";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vite-plus/test";
 
-import type * as ProcessRunner from "../processRunner.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import {
   cargoWorkspaceDependencies,
   makeWorkspaceCrateNoteReader,
@@ -115,7 +116,8 @@ const workspaceFiles: Readonly<Record<string, string>> = {
 const makeReader = (input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
-  readonly rustupDefault?: ProcessRunner.ProcessRunOutput;
+  /** `"missing"` when rustup is not installed. */
+  readonly rustupDefault?: ProcessRunner.ProcessRunOutput | "missing";
 }) => {
   const files = input.files ?? workspaceFiles;
   const runs: ProcessRunner.ProcessRunInput[] = [];
@@ -131,15 +133,24 @@ const makeReader = (input: {
   });
   const processRunner = {
     run: (runInput: ProcessRunner.ProcessRunInput) =>
-      Effect.sync(() => {
-        if (runInput.command === "rustup") {
-          rustupRuns.push(runInput);
-          return (
-            input.rustupDefault ?? output({ stdout: "stable-x86_64-unknown-linux-gnu (default)\n" })
+      Effect.suspend(() => {
+        if (runInput.command !== "rustup") {
+          runs.push(runInput);
+          return Effect.succeed(outputs.shift() ?? output({ stdout: JSON.stringify(metadata) }));
+        }
+        rustupRuns.push(runInput);
+        if (input.rustupDefault === "missing") {
+          return Effect.fail(
+            new ProcessRunner.ProcessSpawnError({
+              command: "rustup",
+              argumentCount: 1,
+              cause: notFound("rustup"),
+            }),
           );
         }
-        runs.push(runInput);
-        return outputs.shift() ?? output({ stdout: JSON.stringify(metadata) });
+        return Effect.succeed(
+          input.rustupDefault ?? output({ stdout: "stable-x86_64-unknown-linux-gnu (default)\n" }),
+        );
       }),
   } as unknown as ProcessRunner.ProcessRunner["Service"];
   return Effect.gen(function* () {
@@ -203,10 +214,11 @@ describe("makeWorkspaceCrateNoteReader", () => {
     ["output that is not metadata", output({ stdout: "{" })],
   ] as const)("stays silent on %s and tries again next time", ([, failure]) =>
     Effect.gen(function* () {
-      const { read, runs } = yield* makeReader({ outputs: [failure] });
+      const { read, runs, rustupRuns } = yield* makeReader({ outputs: [failure] });
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(runs.length, 2);
+      assert.equal(rustupRuns.length, 2);
     }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -229,9 +241,22 @@ describe("makeWorkspaceCrateNoteReader", () => {
     ["a default that is a folder", output({ stdout: "/opt/evil (default)\n" })],
   ] as const)("stays silent without running cargo for %s", ([, rustupDefault]) =>
     Effect.gen(function* () {
-      const { read, runs } = yield* makeReader({ rustupDefault });
+      const { read, runs, rustupRuns } = yield* makeReader({ rustupDefault });
+      assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(yield* read("/repo/crates/mill"), "");
       assert.equal(runs.length, 0);
+      assert.equal(rustupRuns.length, 1);
+      yield* TestClock.adjust("5 minutes");
+      yield* read("/repo/crates/mill");
+      assert.equal(rustupRuns.length, 2);
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  effectIt.effect("runs cargo unpinned when rustup is not installed", () =>
+    Effect.gen(function* () {
+      const { read, runs } = yield* makeReader({ rustupDefault: "missing" });
+      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      assert.isUndefined(runs[0]?.env);
     }).pipe(Effect.provide(Path.layer)),
   );
 });
