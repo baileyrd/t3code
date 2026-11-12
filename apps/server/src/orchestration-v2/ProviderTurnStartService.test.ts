@@ -54,6 +54,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
@@ -136,6 +137,7 @@ function startWithMissingWorktree(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
+        Layer.mock(ProcessRunner.ProcessRunner)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
@@ -289,6 +291,8 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
   readonly recoveryReadFailure?: string;
+  /** `cargo metadata` output for the thread's folder; without it, cargo fails. */
+  readonly cargoMetadata?: string;
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed";
     readonly turnStatus: "running" | "completed" | "interrupted";
@@ -794,6 +798,14 @@ function makeLocalCommandHarness(input: {
     lastError: null,
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
+  const runProcess = vi.fn(() =>
+    Effect.succeed({
+      stdout: input.cargoMetadata ?? "",
+      stderr: "",
+      code: input.cargoMetadata === undefined ? 101 : 0,
+      timedOut: false,
+    } as ProcessRunner.ProcessRunOutput),
+  );
   const sideChatThread = {
     ...providerThread,
     nativeThreadRef: {
@@ -1030,11 +1042,13 @@ function makeLocalCommandHarness(input: {
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
+        Layer.mock(ProcessRunner.ProcessRunner)({ run: runProcess }),
       ),
     ),
   );
   return {
     settledRuns,
+    runProcess,
     getThreadRecords,
     getTurnStartContext,
     getRuntimeRecoveryProjection,
@@ -1330,6 +1344,52 @@ effectIt.effect.each([
         },
       ]);
     }),
+);
+
+const millCrateMetadata = JSON.stringify({
+  workspace_root: "/tmp",
+  packages: [
+    {
+      name: "mill",
+      manifest_path: "/tmp/native-account-command/Cargo.toml",
+      dependencies: [{ name: "rustils", kind: null, path: "/tmp/rustils" }],
+    },
+    { name: "rustils", manifest_path: "/tmp/rustils/Cargo.toml", dependencies: [] },
+  ],
+});
+
+effectIt.effect("names the thread's crate and its workspace dependencies on the first turn", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Fix the parser",
+      cargoMetadata: millCrateMetadata,
+      sideChat: { contextRun: "current" },
+    });
+
+    yield* harness.start;
+
+    expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
+      withInlineContext(
+        "This folder is the `mill` crate of a Cargo workspace. Its workspace dependencies: rustils.\n\nSIDE_CHAT_CONTEXT",
+        "Fix the parser",
+      ),
+    ]);
+  }),
+);
+
+effectIt.effect("leaves the crate note out after the thread's first turn", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      cargoMetadata: millCrateMetadata,
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+
+    yield* harness.start;
+
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.runProcess).not.toHaveBeenCalled();
+  }),
 );
 
 effectIt.effect.each([
