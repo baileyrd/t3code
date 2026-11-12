@@ -9,6 +9,7 @@ import {
   buildThreadActionItems,
   buildLinkedThreadActionItems,
   filterPinnedBrowseEntries,
+  buildWorkspacePackageGroups,
   filterCommandPaletteGroups,
   reduceCommandPaletteUiState,
   resolveAddProjectEntry,
@@ -837,6 +838,53 @@ it.each([
   expect(groups.flatMap((group) => group.items.map((item) => item.title))).toEqual([
     "Implementation",
   ]);
+});
+
+describe("buildWorkspacePackageGroups", () => {
+  const build = (
+    result: Parameters<typeof buildWorkspacePackageGroups>[0]["result"],
+    filterQuery = "",
+  ) => {
+    const retry = vi.fn();
+    const groups = buildWorkspacePackageGroups({
+      result,
+      filterQuery,
+      icon: null,
+      retryIcon: null,
+      addPackage: async () => {},
+      retry,
+    });
+    return {
+      rows: groups.flatMap((group) => group.items.map((item) => item.title)),
+      groups,
+      retry,
+    };
+  };
+  const packages = [
+    { name: "rusty_mill_board", relativePath: "crates/apps/rusty_mill_board", fullPath: "/r/a" },
+    { name: "rusty_log", relativePath: "crates/libs/rusty_log", fullPath: "/r/b" },
+  ];
+
+  it.each([
+    ["no workspace", { status: "not-workspace" as const }, "", []],
+    [
+      "a listing, narrowed by the typed name",
+      { status: "ok" as const, packages },
+      "BOARD",
+      ["rusty_mill_board"],
+    ],
+    ["a listing nothing matches", { status: "ok" as const, packages }, "zzz", []],
+  ])("shows %s", (_name, result, filterQuery, rows) => {
+    expect(build(result, filterQuery).rows).toEqual(rows);
+  });
+
+  it("offers a retry that says why the workspace could not be read", async () => {
+    const { groups, retry } = build({ status: "failed", reason: "`cargo` is not installed." });
+    const row = groups[0]?.items[0];
+    expect(row?.description).toBe("`cargo` is not installed.");
+    await (row?.kind === "action" ? row.run() : undefined);
+    expect(retry).toHaveBeenCalledOnce();
+  });
 });
 
 describe("command palette search return", () => {

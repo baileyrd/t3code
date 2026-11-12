@@ -566,8 +566,7 @@ export const make = Effect.gen(function* () {
     projectEnrichment.getAvailable(shell.workspaceRoot).pipe(
       Effect.map((enrichment) => ({
         ...shell,
-        repositoryIdentity: enrichment.repositoryIdentity,
-        repositorySubdirectory: enrichment.repositorySubdirectory,
+        ...ProjectEnrichmentService.projectEnrichmentFields(enrichment),
       })),
     );
 

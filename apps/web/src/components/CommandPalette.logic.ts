@@ -24,12 +24,16 @@ import {
   type ProjectId,
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
+  type FilesystemWorkspacePackagesResult,
   type KeybindingCommand,
   type SourceControlDiscoveryResult,
   type SourceControlRepositoryInfo,
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
-import { filterFilesystemBrowseEntries } from "@t3tools/client-runtime/state/filesystem";
+import {
+  filterFilesystemBrowseEntries,
+  filterWorkspacePackages,
+} from "@t3tools/client-runtime/state/filesystem";
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
@@ -733,6 +737,49 @@ export function buildBrowseGroups(input: {
   }
 
   return [{ value: "directories", label: "Directories", items }];
+}
+
+/** Member packages of the browsed workspace root, each added as its own project, or why they are missing. */
+export function buildWorkspacePackageGroups(input: {
+  result: FilesystemWorkspacePackagesResult | null;
+  filterQuery: string;
+  icon: ReactNode;
+  retryIcon: ReactNode;
+  addPackage: (fullPath: string) => Promise<void>;
+  retry: () => void;
+}): CommandPaletteGroup[] {
+  const group = (items: CommandPaletteActionItem[]): CommandPaletteGroup[] => [
+    { value: "workspace-packages", label: "Workspace packages", items },
+  ];
+  if (input.result?.status === "failed") {
+    return group([
+      {
+        kind: "action",
+        value: "package:retry",
+        searchTerms: [],
+        title: "Couldn't read the workspace. Try again",
+        description: input.result.reason,
+        icon: input.retryIcon,
+        keepOpen: true,
+        run: async () => input.retry(),
+      },
+    ]);
+  }
+  if (input.result?.status !== "ok") return [];
+  const packages = filterWorkspacePackages(input.result.packages, input.filterQuery);
+  if (packages.length === 0) return [];
+  return group(
+    packages.map((pkg): CommandPaletteActionItem => ({
+      kind: "action",
+      value: `package:${pkg.fullPath}`,
+      searchTerms: [pkg.name, pkg.relativePath],
+      title: pkg.name,
+      description: pkg.relativePath,
+      icon: input.icon,
+      keepOpen: true,
+      run: () => input.addPackage(pkg.fullPath),
+    })),
+  );
 }
 
 export function filterPinnedBrowseEntries(input: {

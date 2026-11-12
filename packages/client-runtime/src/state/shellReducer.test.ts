@@ -125,13 +125,27 @@ describe("applyShellStreamEvent", () => {
     const previous = {
       ...v2ShellSnapshot,
       snapshotSequence: 20,
-      projects: [{ ...v2Project, title: "Client ahead", repositoryIdentity }],
+      projects: [
+        {
+          ...v2Project,
+          title: "Client ahead",
+          repositoryIdentity,
+          repositorySubdirectory: "crates/mill",
+        },
+      ],
       threads: [{ ...v2ThreadShell, title: "Local-only thread" }],
     };
     const serverSnapshot = {
       ...v2ShellSnapshot,
       snapshotSequence: 3,
-      projects: [{ ...v2Project, title: "Server reset", repositoryIdentity: null }],
+      projects: [
+        {
+          ...v2Project,
+          title: "Server reset",
+          repositoryIdentity: null,
+          repositorySubdirectory: null,
+        },
+      ],
       threads: [{ ...v2ThreadShell, title: "Server thread" }],
     };
 
@@ -141,6 +155,7 @@ describe("applyShellStreamEvent", () => {
     expect(afterEnrichment.snapshotSequence).toBe(20);
     expect(afterEnrichment.projects[0]?.title).toBe("Client ahead");
     expect(afterEnrichment.projects[0]?.repositoryIdentity).toBeNull();
+    expect(afterEnrichment.projects[0]?.repositorySubdirectory).toBeNull();
     expect(afterEnrichment.threads[0]?.title).toBe("Local-only thread");
 
     const afterAuthoritative = mergeShellSnapshotProjects(afterEnrichment, serverSnapshot);

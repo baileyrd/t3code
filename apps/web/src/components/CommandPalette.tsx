@@ -79,6 +79,7 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
+  PackageIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
@@ -194,6 +195,7 @@ import {
   ADDON_ICON_CLASS,
   browseInputEndPaddingClass,
   buildBrowseGroups,
+  buildWorkspacePackageGroups,
   buildRootGroups,
   buildLinkedThreadActionItems,
   buildCommandPaletteRows,
@@ -745,6 +747,15 @@ function OpenCommandPaletteDialog(props: {
       : null,
   );
   const browseResult = browseQuery.data;
+  // A clone goes into a new folder, never into a package of a workspace.
+  const workspacePackagesQuery = useEnvironmentQuery(
+    browseAccess.canReadFiles && hasBrowseTarget && addProjectCloneFlow === null && browseResult
+      ? filesystemEnvironment.workspacePackages({
+          environmentId: browseEnvironmentId,
+          input: { path: browseResult.parentPath },
+        })
+      : null,
+  );
   const isBrowsePending = hasBrowseTarget && (browseAccess.isPending || browseQuery.isPending);
   const browseAccessError =
     hasBrowseTarget && !browseAccess.isPending && !browseAccess.canReadFiles
@@ -2310,6 +2321,14 @@ function OpenCommandPaletteDialog(props: {
     browseUp,
     browseTo,
   });
+  const workspacePackageGroups = buildWorkspacePackageGroups({
+    result: workspacePackagesQuery.data,
+    filterQuery: browsePath.filterQuery,
+    icon: <PackageIcon className={ITEM_ICON_CLASS} />,
+    retryIcon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+    addPackage: handleAddProject,
+    retry: workspacePackagesQuery.refresh,
+  });
   const cloneDestinationBrowseGroups = browseGroups.map((group) =>
     group.value === "directories" ? { ...group, label: "Select where to clone" } : group,
   );
@@ -2454,7 +2473,9 @@ function OpenCommandPaletteDialog(props: {
   } else if (addProjectCloneFlow?.step === "confirm") {
     displayedGroups = relativePathNeedsActiveProject ? [] : cloneDestinationBrowseGroups;
   } else if (isBrowsing) {
-    displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
+    displayedGroups = relativePathNeedsActiveProject
+      ? []
+      : [...workspacePackageGroups, ...browseGroups];
   }
   const resultRows = buildCommandPaletteRows(displayedGroups);
   const autoHighlightsFirstRow =
@@ -2466,7 +2487,7 @@ function OpenCommandPaletteDialog(props: {
       : (remoteProjectInputPlaceholder(addProjectCloneFlow) ??
         getCommandPaletteInputPlaceholder(paletteMode));
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
-  const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
+  const hasHighlightedBrowseItem = /^(browse|package):/.test(highlightedItemValue ?? "");
   const canWriteSourceControl = useEnvironmentScope(
     addProjectCloneFlow?.environmentId ?? null,
     AuthSourceControlWriteScope,

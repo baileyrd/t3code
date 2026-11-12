@@ -205,6 +205,7 @@ import { parseBase64DataUrl } from "./imageMime.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
+import * as WorkspacePackages from "./workspace/WorkspacePackages.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
@@ -870,8 +871,7 @@ const enrichProjectShells = Effect.fn("ws.orchestrationV2.enrichProjectShells")(
             Effect.map((enrichment) => ({
               project: {
                 ...project,
-                repositoryIdentity: enrichment.repositoryIdentity,
-                repositorySubdirectory: enrichment.repositorySubdirectory,
+                ...ProjectEnrichmentService.projectEnrichmentFields(enrichment),
               },
               repositoryIdentityResolved: enrichment.repositoryIdentityResolved,
             })),
@@ -1279,13 +1279,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             const enrichment = enrichments.get(project.workspaceRoot);
             return enrichment === undefined
               ? []
-              : [
-                  {
-                    ...project,
-                    repositoryIdentity: enrichment.repositoryIdentity,
-                    repositorySubdirectory: enrichment.repositorySubdirectory,
-                  },
-                ];
+              : [{ ...project, ...ProjectEnrichmentService.projectEnrichmentFields(enrichment) }];
           });
           return shellStreamItemFromEnrichmentRefresh({
             snapshot: {
@@ -1542,6 +1536,7 @@ export const layerWsRpc = (
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const workspacePackages = yield* WorkspacePackages.WorkspacePackages;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2995,6 +2990,7 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.filesystemWorkspacePackages]: (input) => workspacePackages.list(input),
         [WS_METHODS.attachmentsCreateUploadUrl]: (input) => issueAttachmentUploadUrl(input),
         [WS_METHODS.attachmentsDelete]: (input) => deletePendingAttachment(input.attachmentId),
         [WS_METHODS.agentSessionsScan]: () => agentSessionScanner.scan,

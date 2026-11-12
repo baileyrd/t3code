@@ -73,8 +73,7 @@ export const layer = HttpApiBuilder.group(
             projectEnrichment.getAvailable(project.workspaceRoot).pipe(
               Effect.map((enrichment) => ({
                 ...project,
-                repositoryIdentity: enrichment.repositoryIdentity,
-                repositorySubdirectory: enrichment.repositorySubdirectory,
+                ...ProjectEnrichmentService.projectEnrichmentFields(enrichment),
               })),
             ),
           { concurrency: 16 },
