@@ -115,9 +115,11 @@ const workspaceFiles: Readonly<Record<string, string>> = {
 const makeReader = (input: {
   readonly files?: Readonly<Record<string, string>>;
   readonly outputs?: ReadonlyArray<ProcessRunner.ProcessRunOutput>;
+  readonly rustupDefault?: ProcessRunner.ProcessRunOutput;
 }) => {
   const files = input.files ?? workspaceFiles;
   const runs: ProcessRunner.ProcessRunInput[] = [];
+  const rustupRuns: ProcessRunner.ProcessRunInput[] = [];
   const outputs = [...(input.outputs ?? [output({ stdout: JSON.stringify(metadata) })])];
   const fileSystem = FileSystem.makeNoop({
     readFileString: (file) =>
@@ -130,13 +132,23 @@ const makeReader = (input: {
   const processRunner = {
     run: (runInput: ProcessRunner.ProcessRunInput) =>
       Effect.sync(() => {
+        if (runInput.command === "rustup") {
+          rustupRuns.push(runInput);
+          return (
+            input.rustupDefault ?? output({ stdout: "stable-x86_64-unknown-linux-gnu (default)\n" })
+          );
+        }
         runs.push(runInput);
         return outputs.shift() ?? output({ stdout: JSON.stringify(metadata) });
       }),
   } as unknown as ProcessRunner.ProcessRunner["Service"];
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    return { read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }), runs };
+    return {
+      read: makeWorkspaceCrateNoteReader({ processRunner, fileSystem, path }),
+      runs,
+      rustupRuns,
+    };
   });
 };
 
@@ -145,13 +157,17 @@ const millNote =
 
 describe("makeWorkspaceCrateNoteReader", () => {
   effectIt.effect(
-    "names the crate of a folder opened through a symlink, without rustup installs",
+    "names the crate of a folder opened through a symlink, on the default toolchain",
     () =>
       Effect.gen(function* () {
-        const { read, runs } = yield* makeReader({});
+        const { read, runs, rustupRuns } = yield* makeReader({});
         assert.equal(yield* read("/link/crates/mill"), millNote);
         assert.equal(runs[0]?.cwd, "/repo/crates/mill");
-        assert.deepEqual(runs[0]?.env, { RUSTUP_AUTO_INSTALL: "0" });
+        assert.deepEqual(runs[0]?.env, {
+          RUSTUP_TOOLCHAIN: "stable-x86_64-unknown-linux-gnu",
+          RUSTUP_AUTO_INSTALL: "0",
+        });
+        assert.equal(rustupRuns[0]?.cwd, "/");
       }).pipe(Effect.provide(Path.layer)),
   );
 
@@ -160,20 +176,19 @@ describe("makeWorkspaceCrateNoteReader", () => {
       const copy = Object.fromEntries(
         Object.entries(workspaceFiles).map(([file, text]) => [file.replace("/repo", "/wt"), text]),
       );
-      const { read, runs } = yield* makeReader({ files: { ...workspaceFiles, ...copy } });
+      const { read, runs, rustupRuns } = yield* makeReader({
+        files: { ...workspaceFiles, ...copy },
+      });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
       assert.equal(yield* read("/wt/crates/mill"), millNote);
       assert.equal(runs.length, 1);
+      assert.equal(rustupRuns.length, 1);
     }).pipe(Effect.provide(Path.layer)),
   );
 
   effectIt.effect.each([
     ["no manifest in the folder", { "/repo/Cargo.toml": workspaceFiles["/repo/Cargo.toml"]! }],
     ["no workspace above it", { "/repo/crates/mill/Cargo.toml": "[package]\n" }],
-    [
-      "a toolchain that points rustup at a repository folder",
-      { ...workspaceFiles, "/repo/rust-toolchain.toml": '[toolchain]\npath = "/opt/evil"\n' },
-    ],
   ] as const)("stays silent without running cargo for %s", ([, files]) =>
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({ files });
@@ -209,14 +224,14 @@ describe("makeWorkspaceCrateNoteReader", () => {
     }).pipe(Effect.provide(Path.layer)),
   );
 
-  effectIt.effect("reads a pinned channel toolchain as usual", () =>
+  effectIt.effect.each([
+    ["no rustup default", output({ code: ChildProcessSpawner.ExitCode(1) })],
+    ["a default that is a folder", output({ stdout: "/opt/evil (default)\n" })],
+  ] as const)("stays silent without running cargo for %s", ([, rustupDefault]) =>
     Effect.gen(function* () {
-      const files = {
-        ...workspaceFiles,
-        "/repo/rust-toolchain.toml": '[toolchain]\nchannel = "1.90"\n',
-      };
-      const { read } = yield* makeReader({ files });
-      assert.equal(yield* read("/repo/crates/mill"), millNote);
+      const { read, runs } = yield* makeReader({ rustupDefault });
+      assert.equal(yield* read("/repo/crates/mill"), "");
+      assert.equal(runs.length, 0);
     }).pipe(Effect.provide(Path.layer)),
   );
 });
