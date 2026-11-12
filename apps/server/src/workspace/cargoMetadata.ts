@@ -87,6 +87,16 @@ const CACHE_CAPACITY = 16;
 const TOOLCHAIN_TTL_MS = 5 * 60 * 1000;
 const FAILURE_TTL_MS = 10 * 1000;
 const CARGO_CONCURRENCY = 2;
+// A repository's `.cargo/config.toml` can name a rustc or wrapper that cargo runs whenever it asks
+// rustc about targets; empty values switch the wrappers off and `rustc` resolves to the pinned one.
+const NO_RUSTC_OVERRIDES = {
+  RUSTC: "rustc",
+  RUSTC_WRAPPER: "",
+  RUSTC_WORKSPACE_WRAPPER: "",
+  CARGO_BUILD_RUSTC: "rustc",
+  CARGO_BUILD_RUSTC_WRAPPER: "",
+  CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: "",
+} as const;
 // Cold runs on large workspaces take seconds; callers that can't wait bound their own wait.
 const CARGO_TIMEOUT = "30 seconds";
 // `--no-deps` metadata of a few hundred crates is a few MB; leave room for much larger ones.
@@ -223,7 +233,7 @@ export function makeCargoMetadataReader(services: CargoMetadataServices) {
         command: "cargo",
         args: ["metadata", "--format-version", "1", "--no-deps", "--offline"],
         cwd: root,
-        env: { RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
+        env: { ...NO_RUSTC_OVERRIDES, RUSTUP_TOOLCHAIN: toolchain, RUSTUP_AUTO_INSTALL: "0" },
         timeout: CARGO_TIMEOUT,
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: CARGO_MAX_OUTPUT_BYTES,

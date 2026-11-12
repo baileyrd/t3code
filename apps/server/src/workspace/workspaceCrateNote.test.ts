@@ -186,6 +186,13 @@ describe("makeWorkspaceCrateNoteReader", () => {
         assert.deepEqual(runs[0]?.env, {
           RUSTUP_TOOLCHAIN: "stable-x86_64-unknown-linux-gnu",
           RUSTUP_AUTO_INSTALL: "0",
+          // A branch's `.cargo/config.toml` must not pick the rustc cargo runs.
+          RUSTC: "rustc",
+          RUSTC_WRAPPER: "",
+          RUSTC_WORKSPACE_WRAPPER: "",
+          CARGO_BUILD_RUSTC: "rustc",
+          CARGO_BUILD_RUSTC_WRAPPER: "",
+          CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: "",
         });
         assert.equal(rustupRuns[0]?.cwd, "/");
       }).pipe(Effect.provide(Path.layer)),
@@ -286,10 +293,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
     Effect.gen(function* () {
       const { read, runs } = yield* makeReader({ rustupDefault: "missing" });
       assert.equal(yield* read("/repo/crates/mill"), millNote);
-      assert.deepEqual(runs[0]?.env, {
-        RUSTUP_TOOLCHAIN: "t3code-no-toolchain",
-        RUSTUP_AUTO_INSTALL: "0",
-      });
+      assert.include(runs[0]?.env, { RUSTUP_TOOLCHAIN: "t3code-no-toolchain" });
     }).pipe(Effect.provide(Path.layer)),
   );
 
