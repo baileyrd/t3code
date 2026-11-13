@@ -88,7 +88,7 @@ describe("workspaceCrateNoteText", () => {
 
   it("still names a sparse worktree's crate when it has no workspace dependencies", () => {
     expect(workspaceCrateNoteText({ crate: "rustils", dependencies: [] }, true)).toBe(
-      "This folder is the `rustils` crate of a Cargo workspace. This worktree is a sparse checkout of only those crates; run `git sparse-checkout add <folder>` before working in another.",
+      'This folder is the `rustils` crate of a Cargo workspace. This worktree is a sparse checkout of only those crates; run `git -C "$(git rev-parse --show-toplevel)" sparse-checkout add <folder>` before working in another.',
     );
   });
 });
@@ -218,7 +218,7 @@ describe("makeWorkspaceCrateNoteReader", () => {
       const { read } = yield* makeReader({ sparse: true });
       assert.equal(
         yield* read("/repo/crates/mill"),
-        `${millNote} This worktree is a sparse checkout of only those crates; run \`git sparse-checkout add <folder>\` before working in another.`,
+        `${millNote} This worktree is a sparse checkout of only those crates; run \`git -C "$(git rev-parse --show-toplevel)" sparse-checkout add <folder>\` before working in another.`,
       );
     }).pipe(Effect.provide(Path.layer)),
   );

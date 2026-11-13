@@ -16,8 +16,8 @@ pnpm crate-note --out runs/sparse-plain --sparse --note plain
 
 - Models go through the `vibeproxy` provider in `~/.codex/config.toml`, as in [test-signal](../test-signal/). Defaults: `gpt-6.1-terra` and `gpt-6-luna`. Pass `--model` once per model.
 - Flags: `--note current|plain|none` (`none` is the baseline without the note, `plain` the note without the sparse-worktree hint), `--sparse`, `--case <id>` (repeatable), `--samples <n>` (default 3), `--concurrency <n>` (default 6).
-- `--sparse` hides what a sparse worktree of the crate leaves out: other crates' files except their manifest and target file. `git sparse-checkout add` through `run` brings a folder in. Only sparse runs include `outside` cases.
-- A `dependency` case passes when the first file the agent touches outside its crate belongs to a dependency the note names, and it never asks cargo for the graph. A `local` case passes when it stays in its crate. An `outside` case passes when it runs `git sparse-checkout add` (or `disable`). A case passes on a majority of samples.
+- `--sparse` hides what a sparse worktree of the crate leaves out: other crates' files except their manifest and target file. `run` starts in the crate's folder and follows `cd` and `git -C`; `git sparse-checkout add` brings a folder in only from the worktree root and otherwise prints git's non-cone error. Only sparse runs include `outside` cases, and naming one without `--sparse` is an error.
+- A `dependency` case passes when the first file the agent touches outside its crate belongs to a dependency the note names, and it never asks cargo for the graph. A `local` case passes when it stays in its crate. An `outside` case passes when it reads its target file once the checkout holds it, and fails if it runs `git sparse-checkout disable`. A case passes on a majority of samples.
 - `summary.md` lists passes and tokens per model and case. A full run is about 12 short conversations per model.
 
 ## Add a case
