@@ -243,17 +243,21 @@ const summary = await Effect.runPromise(
     const lines = [
       `note: ${values.note}${sparse ? ", sparse worktree" : ""}`,
       "",
-      "| model | case | passed | tokens |",
-      "|---|---|---|---|",
+      "| model | case | passed | failed to run | tokens |",
+      "|---|---|---|---|---|",
     ];
     for (const model of models) {
       for (const entry of selected) {
         const own = rows.filter((row) => row.model === model && row.case === entry.id);
         const tokens = own.reduce((sum, row) => sum + ("tokens" in row ? row.tokens : 0), 0);
         lines.push(
-          `| ${model} | ${entry.id} | ${own.filter(passed).length}/${own.length} | ${tokens} |`,
+          `| ${model} | ${entry.id} | ${own.filter(passed).length}/${own.length} | ${own.filter((row) => "error" in row).length} | ${tokens} |`,
         );
       }
+    }
+    const firstError = rows.find((row) => "error" in row);
+    if (firstError !== undefined && "error" in firstError) {
+      lines.push("", `First error: ${firstError.error.split("\n")[0]}`);
     }
     const report = lines.join("\n") + "\n";
     NodeFS.writeFileSync(NodePath.join(outDirectory, "summary.md"), report);
