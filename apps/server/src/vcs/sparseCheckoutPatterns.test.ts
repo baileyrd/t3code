@@ -25,6 +25,35 @@ describe("sparseCheckoutPatterns", () => {
     ]);
   });
 
+  it.each([
+    ["one level", "/repo", ["/repo/crates/tokio", "/repo/crates/tokio/macros"], "crates/tokio"],
+    [
+      "three levels",
+      "/repo",
+      ["/repo/crates/d", "/repo/crates/d/a/n1", "/repo/crates/d/a/n1/b/n2"],
+      "crates/d",
+    ],
+    [
+      "two Windows spellings",
+      "C:/Dev/Repo",
+      ["C:\\Dev\\Repo\\Crates\\Tokio", "c:\\dev\\repo\\crates\\tokio\\macros"],
+      "Crates/Tokio",
+    ],
+  ] as const)(
+    "never cuts out the subfolders of a folder that holds another, at %s",
+    (_name, root, directories, whole) => {
+      const patterns = sparseCheckoutPatterns(root, { directories, files: [] }) ?? [];
+      expect(patterns).toContain(`/${whole}/`);
+      const folded = whole.toLowerCase();
+      const cutting = patterns.filter((pattern) => {
+        const lower = pattern.toLowerCase();
+        return lower.startsWith(`!/${folded}/`) || lower === `/${folded}/*`;
+      });
+      expect(cutting).toEqual([]);
+      expect(patterns.filter((pattern) => pattern.toLowerCase() === "/crates/*")).toHaveLength(1);
+    },
+  );
+
   it("relates Windows paths whatever their separators and case, keeping the paths' case", () => {
     expect(
       sparseCheckoutPatterns("C:/Dev/Repo", {

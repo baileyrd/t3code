@@ -833,6 +833,8 @@ const createSparseWorktree = (input: {
       "crates/AGENTS.md",
       "crates/a/Cargo.toml",
       "crates/a/src/lib.rs",
+      "crates/a/src/inner/mod.rs",
+      "crates/a/macros/Cargo.toml",
       "crates/b/Cargo.toml",
       "crates/b/src/lib.rs",
       "docs/guide.md",
@@ -867,8 +869,9 @@ const createSparseWorktree = (input: {
     return { present, resolved, worktreePath, path };
   });
 
+// `crates/a` holds another crate, as rusty_tokio holds rusty_tokio-macros.
 const crateA = (root: string): TestSparsePaths => ({
-  directories: [`${root}/crates/a`, "/elsewhere/crate"],
+  directories: [`${root}/crates/a`, `${root}/crates/a/macros`, "/elsewhere/crate"],
   files: [`${root}/crates/b/Cargo.toml`],
 });
 
@@ -886,6 +889,8 @@ it.effect("checks out only the sparse paths, the root's files and their parents'
         "crates/.cargo/config.toml",
         "crates/AGENTS.md",
         "crates/a/src/lib.rs",
+        "crates/a/src/inner/mod.rs",
+        "crates/a/macros/Cargo.toml",
         "crates/b/Cargo.toml",
       ]) {
         assert.isTrue(yield* present(file), file);
