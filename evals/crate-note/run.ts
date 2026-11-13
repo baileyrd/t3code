@@ -11,8 +11,9 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { workspaceCrateNoteText } from "../../apps/server/src/workspace/workspaceCrateNote.ts";
 import { proxyConfig } from "../shared/proxy.ts";
-import { cases, crateDir, files, note, sparseVisible, workspaceRoot, type Case } from "./cases.ts";
+import { cases, crateDir, files, note, workspaceRoot, type Case } from "./cases.ts";
 import { grade, type ToolCall } from "./grade.ts";
+import { simulateRun, sparseStart, sparseVisible } from "./sandbox.ts";
 
 const { values } = NodeUtil.parseArgs({
   options: {
@@ -25,7 +26,8 @@ const { values } = NodeUtil.parseArgs({
     concurrency: { type: "string", default: "6" },
   },
 });
-if (!values.out) throw new Error("Use --out <directory> [--model <id>] [--note current|none].");
+if (!values.out)
+  throw new Error("Use --out <directory> [--model <id>] [--note current|plain|none] [--sparse].");
 if (values.note !== "current" && values.note !== "plain" && values.note !== "none")
   throw new Error("--note is current, plain or none.");
 const sparse = values.sparse === true;
@@ -33,6 +35,9 @@ const outDirectory = values.out;
 const models = values.model ?? ["gpt-6.1-terra", "gpt-6-luna"];
 // Outside cases need a sparse worktree; without one there is nothing to widen.
 const runnable = cases.filter((entry) => sparse || entry.kind !== "outside");
+const missing = (values.case ?? []).filter((id) => !runnable.some((entry) => entry.id === id));
+if (missing.length > 0)
+  throw new Error(`No such case${sparse ? "" : " without --sparse"}: ${missing.join(", ")}.`);
 const selected = values.case
   ? runnable.filter((entry) => values.case!.includes(entry.id))
   : runnable;
@@ -47,25 +52,16 @@ const fullTree = new Map(
 );
 const resolve = (path: unknown) => NodePath.posix.resolve(crateDir, String(path ?? "."));
 
-/** The files a sample sees; a sparse one grows with each `git sparse-checkout add`. */
+/** The files a sample sees; a sparse one grows as `run` widens it. */
 const makeTree = () => {
-  const widened: Array<string> = [];
+  const checkout = sparseStart();
   const visible = () =>
     new Map(
       [...fullTree].filter(
-        ([file]) => !sparse || sparseVisible(file.slice(workspaceRoot.length + 1), widened),
+        ([file]) => !sparse || sparseVisible(file.slice(workspaceRoot.length + 1), checkout),
       ),
     );
-  const widen = (command: string) => {
-    const match = /git\s+sparse-checkout\s+(add|disable)\b(.*)/.exec(command);
-    if (match === null) return null;
-    if (match[1] === "disable") widened.push("");
-    for (const arg of match[2]!.trim().split(/\s+/).filter(Boolean)) {
-      if (!arg.startsWith("-")) widened.push(arg.replace(/^(\.{1,2}\/|\/)+|\/+$/g, ""));
-    }
-    return "";
-  };
-  return { visible, widen };
+  return { visible, run: (command: string) => simulateRun(command, checkout) };
 };
 
 const listDir = (tree: ReadonlyMap<string, string>, dir: string) => {
@@ -189,7 +185,7 @@ const runSample = Effect.fn("evaluateCrateNote.sample")(function* (entry: Case, 
       if (call.name === "run") {
         calls.push({ tool: "run", command: String(args.command) });
         output =
-          sampleTree.widen(String(args.command)) ??
+          sampleTree.run(String(args.command)) ??
           "This sandbox has no Rust toolchain; use the file tools.";
       } else if (call.name === "search") {
         const path = resolve(args.path);
@@ -201,13 +197,14 @@ const runSample = Effect.fn("evaluateCrateNote.sample")(function* (entry: Case, 
         output = listDir(tree, path);
       } else {
         const path = resolve(args.path);
-        calls.push({ tool: "read_file", path });
-        output = tree.get(path) ?? "File not found.";
+        const text = tree.get(path);
+        calls.push({ tool: "read_file", path, found: text !== undefined });
+        output = text ?? "File not found.";
       }
       input.push({ type: "function_call_output", call_id: call.call_id, output });
     }
   }
-  return { ...grade({ kind: entry.kind, calls, crateDir, dependencyDirs }), calls, tokens };
+  return { ...grade({ ...entry, calls, crateDir, dependencyDirs }), calls, tokens };
 });
 
 const sampleSafely = (entry: Case, model: string, sample: number) =>

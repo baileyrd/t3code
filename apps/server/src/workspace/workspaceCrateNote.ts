@@ -45,7 +45,7 @@ export function workspaceCrateNoteText(
       ? ""
       : ` Its workspace dependencies: ${result.dependencies.join(", ")}.`;
   const hint = sparse
-    ? " This worktree is a sparse checkout of only those crates; run `git sparse-checkout add <folder>` before working in another."
+    ? ' This worktree is a sparse checkout of only those crates; run `git -C "$(git rev-parse --show-toplevel)" sparse-checkout add <path from the root>` before working in another.'
     : "";
   return `${crate}${dependencies}${hint}`;
 }

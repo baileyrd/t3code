@@ -1,34 +1,47 @@
 export type ToolCall =
-  | { readonly tool: "read_file" | "list_dir"; readonly path: string }
+  | { readonly tool: "read_file"; readonly path: string; readonly found: boolean }
+  | { readonly tool: "list_dir"; readonly path: string }
   | { readonly tool: "search"; readonly path: string; readonly pattern: string }
   | { readonly tool: "run"; readonly command: string };
+
+/**
+ * `dependency`: the answer lives in a workspace dependency named by the note. `local`: it does
+ * not. `outside`: it lives in `target`, in a crate a sparse worktree left out.
+ */
+export type Expectation =
+  | { readonly kind: "dependency" | "local" }
+  | { readonly kind: "outside"; readonly target: string };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
 /**
  * A dependency case passes when the agent reads the named dependency without asking cargo for the
  * graph or searching the whole workspace first. A local case passes when it stays in its crate. An
- * outside case passes when it widens the sparse checkout.
+ * outside case passes when it reads `target` after widening the checkout to it, without `disable` or `set`.
  */
-export const grade = (input: {
-  readonly kind: "dependency" | "local" | "outside";
-  readonly calls: ReadonlyArray<ToolCall>;
-  readonly crateDir: string;
-  readonly dependencyDirs: ReadonlyArray<string>;
-}) => {
+export const grade = (
+  input: Expectation & {
+    readonly calls: ReadonlyArray<ToolCall>;
+    readonly crateDir: string;
+    readonly dependencyDirs: ReadonlyArray<string>;
+  },
+) => {
   const graphQuery = input.calls.find(
     (call) => call.tool === "run" && /cargo\s+(tree|metadata)/.test(call.command),
   );
   if (graphQuery) return { pass: false, reason: "asked cargo for the dependency graph" };
   if (input.kind === "outside") {
-    const widen = input.calls.flatMap((call) =>
-      call.tool === "run" && /git\s+sparse-checkout\s+(add|disable)\b/.test(call.command)
-        ? [call.command]
-        : [],
-    )[0];
-    return widen === undefined
-      ? { pass: false, reason: "never widened the sparse checkout" }
-      : { pass: true, reason: `widened with \`${widen}\`` };
+    const target = input.target;
+    const reset = input.calls.flatMap((call) =>
+      call.tool === "run" ? (/sparse-checkout\s+(disable|set)\b/.exec(call.command) ?? []) : [],
+    )[1];
+    if (reset === "disable") return { pass: false, reason: "checked out the whole workspace" };
+    if (reset === "set") return { pass: false, reason: "replaced its own crate's checkout" };
+    return input.calls.some(
+      (call) => call.tool === "read_file" && call.path === target && call.found,
+    )
+      ? { pass: true, reason: `read ${target}` }
+      : { pass: false, reason: `never read ${target}` };
   }
   const outside = input.calls.flatMap((call) =>
     call.tool === "run" || within(call.path, input.crateDir) ? [] : [call.path],
