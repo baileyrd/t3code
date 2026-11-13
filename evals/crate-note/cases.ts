@@ -4,8 +4,11 @@
  */
 export type Case = {
   readonly id: string;
-  /** `dependency`: the answer lives in a workspace dependency named by the note. `local`: it does not. */
-  readonly kind: "dependency" | "local";
+  /**
+   * `dependency`: the answer lives in a workspace dependency named by the note. `local`: it does
+   * not. `outside`: it lives in a crate a sparse worktree left out, so the agent widens it first.
+   */
+  readonly kind: "dependency" | "local" | "outside";
   readonly source: string;
   readonly task: string;
 };
@@ -55,10 +58,33 @@ export const files: Readonly<Record<string, string>> = {
     "}",
     "",
   ].join("\n"),
+  "crates/telemetry/Cargo.toml": '[package]\nname = "telemetry"\nversion = "0.1.0"\n',
+  "crates/telemetry/src/lib.rs": "pub mod metrics;\n",
+  "crates/telemetry/src/metrics.rs": [
+    "/// Adds one to the counter `name`, tagged with `labels`.",
+    "pub fn increment(name: &'static str, labels: &[(&'static str, String)]) {",
+    "    let _ = (name, labels);",
+    "}",
+    "",
+  ].join("\n"),
   ...decoy("netkit"),
   ...decoy("store"),
-  ...decoy("telemetry"),
   ...decoy("cli"),
+};
+
+/**
+ * What a sparse worktree of `mill` holds: root files, the crate and its dependencies whole, and
+ * every member's manifest and target file, as `sparseCheckoutPatterns` writes them.
+ */
+export const sparseVisible = (path: string, widened: ReadonlyArray<string>) => {
+  if (!path.includes("/")) return true;
+  if (/^crates\/[^/]+\/(Cargo\.toml|src\/lib\.rs)$/.test(path)) return true;
+  const held = ["crates/mill", ...note.dependencies.map((name) => `crates/${name}`)];
+  // `git sparse-checkout add` takes patterns: a bare folder name matches at any depth.
+  return (
+    held.some((dir) => path.startsWith(`${dir}/`)) ||
+    widened.some((dir) => dir === "" || `/${path}`.includes(`/${dir}/`))
+  );
 };
 
 export const cases: ReadonlyArray<Case> = [
@@ -74,5 +100,12 @@ export const cases: ReadonlyArray<Case> = [
     kind: "local",
     source: "control: a task inside the crate should not send the agent into its dependencies",
     task: "Add a doc example to `retry` in retry.rs showing a call that succeeds on the second try.",
+  },
+  {
+    id: "metric-from-sparse-crate",
+    kind: "outside",
+    source:
+      "baileyrd/t3code#7: a sparse worktree holds only the crate's build graph, so other crates must be added first",
+    task: "Count each retry in retry.rs with the workspace's telemetry crate. Look up its metrics API first.",
   },
 ];

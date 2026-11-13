@@ -10,13 +10,16 @@ The model gets the real note and the real first-message wrapper (`withInlineCont
 cd evals
 pnpm crate-note --out runs/note
 pnpm crate-note --out runs/no-note --note none
+pnpm crate-note --out runs/sparse --sparse
+pnpm crate-note --out runs/sparse-plain --sparse --note plain
 ```
 
 - Models go through the `vibeproxy` provider in `~/.codex/config.toml`, as in [test-signal](../test-signal/). Defaults: `gpt-6.1-terra` and `gpt-6-luna`. Pass `--model` once per model.
-- Flags: `--note current|none` (`none` is the baseline without the note), `--case <id>` (repeatable), `--samples <n>` (default 3), `--concurrency <n>` (default 6).
-- A `dependency` case passes when the first file the agent touches outside its crate belongs to a dependency the note names, and it never asks cargo for the graph. A `local` case passes when it stays in its crate. A case passes on a majority of samples.
+- Flags: `--note current|plain|none` (`none` is the baseline without the note, `plain` the note without the sparse-worktree hint), `--sparse`, `--case <id>` (repeatable), `--samples <n>` (default 3), `--concurrency <n>` (default 6).
+- `--sparse` hides what a sparse worktree of the crate leaves out: other crates' files except their manifest and target file. `git sparse-checkout add` through `run` brings a folder in. Only sparse runs include `outside` cases.
+- A `dependency` case passes when the first file the agent touches outside its crate belongs to a dependency the note names, and it never asks cargo for the graph. A `local` case passes when it stays in its crate. An `outside` case passes when it runs `git sparse-checkout add` (or `disable`). A case passes on a majority of samples.
 - `summary.md` lists passes and tokens per model and case. A full run is about 12 short conversations per model.
 
 ## Add a case
 
-Add an entry to `cases.ts`, naming where it came from. A `dependency` case must fail with `--note none` on at least one model.
+Add an entry to `cases.ts`, naming where it came from. A `dependency` case must fail with `--note none` on at least one model, and an `outside` case with `--sparse --note plain`.

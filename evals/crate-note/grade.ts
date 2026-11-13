@@ -7,10 +7,11 @@ const within = (path: string, dir: string) => path === dir || path.startsWith(`$
 
 /**
  * A dependency case passes when the agent reads the named dependency without asking cargo for the
- * graph or searching the whole workspace first. A local case passes when it stays in its crate.
+ * graph or searching the whole workspace first. A local case passes when it stays in its crate. An
+ * outside case passes when it widens the sparse checkout.
  */
 export const grade = (input: {
-  readonly kind: "dependency" | "local";
+  readonly kind: "dependency" | "local" | "outside";
   readonly calls: ReadonlyArray<ToolCall>;
   readonly crateDir: string;
   readonly dependencyDirs: ReadonlyArray<string>;
@@ -19,6 +20,16 @@ export const grade = (input: {
     (call) => call.tool === "run" && /cargo\s+(tree|metadata)/.test(call.command),
   );
   if (graphQuery) return { pass: false, reason: "asked cargo for the dependency graph" };
+  if (input.kind === "outside") {
+    const widen = input.calls.flatMap((call) =>
+      call.tool === "run" && /git\s+sparse-checkout\s+(add|disable)\b/.test(call.command)
+        ? [call.command]
+        : [],
+    )[0];
+    return widen === undefined
+      ? { pass: false, reason: "never widened the sparse checkout" }
+      : { pass: true, reason: `widened with \`${widen}\`` };
+  }
   const outside = input.calls.flatMap((call) =>
     call.tool === "run" || within(call.path, input.crateDir) ? [] : [call.path],
   );
