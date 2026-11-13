@@ -13,10 +13,14 @@ export const sparseStart = (): Sparse => ({ base: true, patterns: [] });
 
 const held = ["crates/mill", ...note.dependencies.map((name) => `crates/${name}`)];
 
-// As in git: a pattern with an inner `/` matches from the root, one without matches at any depth.
-const matches = (pattern: string, path: string) =>
-  pattern === "" ||
-  (pattern.includes("/") ? path.startsWith(`${pattern}/`) : `/${path}`.includes(`/${pattern}/`));
+// As in git: a pattern with any `/` but a trailing one matches from the root, a bare name at any
+// depth. Globs are not modelled.
+const matches = (pattern: string, path: string) => {
+  if (pattern === "") return true;
+  if (!pattern.includes("/")) return `/${path}/`.includes(`/${pattern}/`);
+  const anchored = pattern.replace(/^\//, "");
+  return path === anchored || path.startsWith(`${anchored}/`);
+};
 
 export const sparseVisible = (path: string, sparse: Sparse) => {
   const inBase =
@@ -70,7 +74,7 @@ export const simulateRun = (command: string, sparse: Sparse): string | null => {
     const patterns = words
       .slice(at + 2)
       .filter((arg) => !arg.startsWith("-"))
-      .map((arg) => arg.replace(/^\/|\/+$/g, ""))
+      .map((arg) => arg.replace(/\/+$/, ""))
       .filter((pattern) => pattern !== "");
     if (subcommand === "set") {
       sparse.base = false;
