@@ -69,21 +69,6 @@ export const files: Readonly<Record<string, string>> = {
   ...decoy("cli"),
 };
 
-/**
- * What a sparse worktree of `mill` holds: root files, the crate and its dependencies whole, and
- * every member's manifest and target file, as `sparseCheckoutPatterns` writes them.
- */
-export const sparseVisible = (path: string, widened: ReadonlyArray<string>) => {
-  if (!path.includes("/")) return true;
-  if (/^crates\/[^/]+\/(Cargo\.toml|src\/lib\.rs)$/.test(path)) return true;
-  const held = ["crates/mill", ...note.dependencies.map((name) => `crates/${name}`)];
-  // `git sparse-checkout add` takes patterns: a bare folder name matches at any depth.
-  return (
-    held.some((dir) => path.startsWith(`${dir}/`)) ||
-    widened.some((dir) => dir === "" || `/${path}`.includes(`/${dir}/`))
-  );
-};
-
 export const cases: ReadonlyArray<Case> = [
   {
     id: "backoff-from-dependency",

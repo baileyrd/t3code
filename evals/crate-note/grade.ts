@@ -17,7 +17,7 @@ const within = (path: string, dir: string) => path === dir || path.startsWith(`$
 /**
  * A dependency case passes when the agent reads the named dependency without asking cargo for the
  * graph or searching the whole workspace first. A local case passes when it stays in its crate. An
- * outside case passes when it reads `target` after widening the checkout to it, without disabling it.
+ * outside case passes when it reads `target` after widening the checkout to it, without `disable` or `set`.
  */
 export const grade = (
   input: Expectation & {
@@ -32,12 +32,11 @@ export const grade = (
   if (graphQuery) return { pass: false, reason: "asked cargo for the dependency graph" };
   if (input.kind === "outside") {
     const target = input.target;
-    if (
-      input.calls.some(
-        (call) => call.tool === "run" && /sparse-checkout\s+disable\b/.test(call.command),
-      )
-    )
-      return { pass: false, reason: "checked out the whole workspace" };
+    const reset = input.calls.flatMap((call) =>
+      call.tool === "run" ? (/sparse-checkout\s+(disable|set)\b/.exec(call.command) ?? []) : [],
+    )[1];
+    if (reset === "disable") return { pass: false, reason: "checked out the whole workspace" };
+    if (reset === "set") return { pass: false, reason: "replaced its own crate's checkout" };
     return input.calls.some(
       (call) => call.tool === "read_file" && call.path === target && call.found,
     )

@@ -11,9 +11,9 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { workspaceCrateNoteText } from "../../apps/server/src/workspace/workspaceCrateNote.ts";
 import { proxyConfig } from "../shared/proxy.ts";
-import { cases, crateDir, files, note, sparseVisible, workspaceRoot, type Case } from "./cases.ts";
+import { cases, crateDir, files, note, workspaceRoot, type Case } from "./cases.ts";
 import { grade, type ToolCall } from "./grade.ts";
-import { simulateRun } from "./sandbox.ts";
+import { simulateRun, sparseStart, sparseVisible } from "./sandbox.ts";
 
 const { values } = NodeUtil.parseArgs({
   options: {
@@ -54,14 +54,14 @@ const resolve = (path: unknown) => NodePath.posix.resolve(crateDir, String(path 
 
 /** The files a sample sees; a sparse one grows as `run` widens it. */
 const makeTree = () => {
-  const widened: Array<string> = [];
+  const checkout = sparseStart();
   const visible = () =>
     new Map(
       [...fullTree].filter(
-        ([file]) => !sparse || sparseVisible(file.slice(workspaceRoot.length + 1), widened),
+        ([file]) => !sparse || sparseVisible(file.slice(workspaceRoot.length + 1), checkout),
       ),
     );
-  return { visible, run: (command: string) => simulateRun(command, widened) };
+  return { visible, run: (command: string) => simulateRun(command, checkout) };
 };
 
 const listDir = (tree: ReadonlyMap<string, string>, dir: string) => {
