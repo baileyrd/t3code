@@ -11,7 +11,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { workspaceCrateNoteText } from "../../apps/server/src/workspace/workspaceCrateNote.ts";
 import { proxyConfig } from "../shared/proxy.ts";
-import { cases, crateDir, files, note, workspaceRoot, type Case } from "./cases.ts";
+import { cases, crateDir, files, note, sparseVisible, workspaceRoot, type Case } from "./cases.ts";
 import { grade, type ToolCall } from "./grade.ts";
 
 const { values } = NodeUtil.parseArgs({
@@ -20,26 +20,55 @@ const { values } = NodeUtil.parseArgs({
     model: { type: "string", multiple: true },
     case: { type: "string", multiple: true },
     note: { type: "string", default: "current" },
+    sparse: { type: "boolean", default: false },
     samples: { type: "string", default: "3" },
     concurrency: { type: "string", default: "6" },
   },
 });
 if (!values.out) throw new Error("Use --out <directory> [--model <id>] [--note current|none].");
-if (values.note !== "current" && values.note !== "none")
-  throw new Error("--note is current or none.");
+if (values.note !== "current" && values.note !== "plain" && values.note !== "none")
+  throw new Error("--note is current, plain or none.");
+const sparse = values.sparse === true;
 const outDirectory = values.out;
 const models = values.model ?? ["gpt-6.1-terra", "gpt-6-luna"];
-const selected = values.case ? cases.filter((entry) => values.case!.includes(entry.id)) : cases;
-const noteText = values.note === "current" ? workspaceCrateNoteText(note) : "";
+// Outside cases need a sparse worktree; without one there is nothing to widen.
+const runnable = cases.filter((entry) => sparse || entry.kind !== "outside");
+const selected = values.case
+  ? runnable.filter((entry) => values.case!.includes(entry.id))
+  : runnable;
+// `plain` is the note before sparse worktrees told the agent how to widen one.
+const noteText =
+  values.note === "none" ? "" : workspaceCrateNoteText(note, sparse && values.note === "current");
 const dependencyDirs = note.dependencies.map((name) => `${workspaceRoot}/crates/${name}`);
 const proxy = proxyConfig();
 
-const tree = new Map(
+const fullTree = new Map(
   Object.entries(files).map(([path, text]) => [`${workspaceRoot}/${path}`, text]),
 );
 const resolve = (path: unknown) => NodePath.posix.resolve(crateDir, String(path ?? "."));
 
-const listDir = (dir: string) => {
+/** The files a sample sees; a sparse one grows with each `git sparse-checkout add`. */
+const makeTree = () => {
+  const widened: Array<string> = [];
+  const visible = () =>
+    new Map(
+      [...fullTree].filter(
+        ([file]) => !sparse || sparseVisible(file.slice(workspaceRoot.length + 1), widened),
+      ),
+    );
+  const widen = (command: string) => {
+    const match = /git\s+sparse-checkout\s+(add|disable)\b(.*)/.exec(command);
+    if (match === null) return null;
+    if (match[1] === "disable") widened.push("");
+    for (const arg of match[2]!.trim().split(/\s+/).filter(Boolean)) {
+      if (!arg.startsWith("-")) widened.push(arg.replace(/^(\.{1,2}\/|\/)+|\/+$/g, ""));
+    }
+    return "";
+  };
+  return { visible, widen };
+};
+
+const listDir = (tree: ReadonlyMap<string, string>, dir: string) => {
   const names = new Set<string>();
   for (const file of tree.keys()) {
     if (file.startsWith(`${dir}/`)) {
@@ -50,7 +79,7 @@ const listDir = (dir: string) => {
   return names.size === 0 ? "No such directory." : [...names].toSorted().join("\n");
 };
 
-const search = (dir: string, pattern: string) => {
+const search = (tree: ReadonlyMap<string, string>, dir: string, pattern: string) => {
   let regex: RegExp;
   try {
     regex = new RegExp(pattern);
@@ -142,6 +171,7 @@ const post = Effect.fn("evaluateCrateNote.post")(function* (body: unknown) {
 
 const runSample = Effect.fn("evaluateCrateNote.sample")(function* (entry: Case, model: string) {
   const calls: Array<ToolCall> = [];
+  const sampleTree = makeTree();
   const input: Array<unknown> = [
     { role: "user", content: withInlineContext(noteText, entry.task) },
   ];
@@ -155,17 +185,20 @@ const runSample = Effect.fn("evaluateCrateNote.sample")(function* (entry: Case, 
     for (const call of pending) {
       const args = decodeArguments(String(call.arguments));
       let output: string;
+      const tree = sampleTree.visible();
       if (call.name === "run") {
         calls.push({ tool: "run", command: String(args.command) });
-        output = "This sandbox has no Rust toolchain; use the file tools.";
+        output =
+          sampleTree.widen(String(args.command)) ??
+          "This sandbox has no Rust toolchain; use the file tools.";
       } else if (call.name === "search") {
         const path = resolve(args.path);
         calls.push({ tool: "search", path, pattern: String(args.pattern) });
-        output = search(path, String(args.pattern));
+        output = search(tree, path, String(args.pattern));
       } else if (call.name === "list_dir") {
         const path = resolve(args.path);
         calls.push({ tool: "list_dir", path });
-        output = listDir(path);
+        output = listDir(tree, path);
       } else {
         const path = resolve(args.path);
         calls.push({ tool: "read_file", path });
@@ -208,19 +241,23 @@ const summary = await Effect.runPromise(
       rows.map((row) => encodeRow(row)).join("\n") + "\n",
     );
     const lines = [
-      `note: ${values.note}`,
+      `note: ${values.note}${sparse ? ", sparse worktree" : ""}`,
       "",
-      "| model | case | passed | tokens |",
-      "|---|---|---|---|",
+      "| model | case | passed | failed to run | tokens |",
+      "|---|---|---|---|---|",
     ];
     for (const model of models) {
       for (const entry of selected) {
         const own = rows.filter((row) => row.model === model && row.case === entry.id);
         const tokens = own.reduce((sum, row) => sum + ("tokens" in row ? row.tokens : 0), 0);
         lines.push(
-          `| ${model} | ${entry.id} | ${own.filter(passed).length}/${own.length} | ${tokens} |`,
+          `| ${model} | ${entry.id} | ${own.filter(passed).length}/${own.length} | ${own.filter((row) => "error" in row).length} | ${tokens} |`,
         );
       }
+    }
+    const firstError = rows.find((row) => "error" in row);
+    if (firstError !== undefined && "error" in firstError) {
+      lines.push("", `First error: ${firstError.error.split("\n")[0]}`);
     }
     const report = lines.join("\n") + "\n";
     NodeFS.writeFileSync(NodePath.join(outDirectory, "summary.md"), report);
